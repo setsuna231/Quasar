@@ -6,6 +6,7 @@
 
 static void emit_statement(ASTNode *node, FILE *out, int indent);
 static void emit_expression(ASTNode *node, FILE *out);
+static void emit_runtime_helpers(FILE *out);
 
 // Returns the Quasar variable type of an expression node.
 static VarType infer_type(ASTNode *node)
@@ -40,6 +41,14 @@ static VarType infer_type(ASTNode *node)
         if (op == OP_POW)
             return TYPE_FLOAT;
 
+        if (op == OP_ADD && left == TYPE_STRING && right == TYPE_STRING)
+            return TYPE_STRING;
+        if (op == OP_MUL)
+        {
+            if ((left == TYPE_STRING && right == TYPE_INT) ||
+                (left == TYPE_INT && right == TYPE_STRING))
+                return TYPE_STRING;
+        }
         // Arithmetic operators: if either operand is float, result is float; otherwise int.
         if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
             op == OP_MOD || op == OP_FLDIV)
@@ -205,26 +214,7 @@ void generate_code(ASTNode *program, FILE *out)
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <math.h>\n\n");
 
-    /* ========== Quasar runtime helpers (global scope) ========== */
-    fprintf(out, "/* Quasar runtime helpers */\n");
-
-    fprintf(out, "char *quasar_input(const char *prompt) {\n");
-    fprintf(out, "    if (prompt) printf(\"%%s\", prompt);\n");
-    fprintf(out, "    char buffer[1024];\n");
-    fprintf(out, "    if (fgets(buffer, sizeof(buffer), stdin)) {\n");
-    fprintf(out, "        size_t len = strlen(buffer);\n");
-    fprintf(out, "        if (len > 0 && buffer[len-1] == '\\n') buffer[len-1] = '\\0';\n");
-    fprintf(out, "        return strdup(buffer);\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    return strdup(\"\");\n");
-    fprintf(out, "}\n\n");
-
-    fprintf(out, "char *quasar_to_string(double x) {\n");
-    fprintf(out, "    char buffer[128];\n");
-    fprintf(out, "    snprintf(buffer, sizeof(buffer), \"%%g\", x);\n");
-    fprintf(out, "    return strdup(buffer);\n");
-    fprintf(out, "}\n\n");
-    /* ======================================================== */
+    emit_runtime_helpers(out);
 
     /* Main function */
     fprintf(out, "int main(void) {\n");
@@ -595,8 +585,46 @@ static void emit_expression(ASTNode *node, FILE *out)
         break;
     case AST_BINARY:
     {
+        BinaryOp op = node->data.binary.op;
+        ASTNode *left = node->data.binary.left;
+        ASTNode *right = node->data.binary.right;
+        VarType ltype = infer_type(left);
+        VarType rtype = infer_type(right);
+
+        /* String concatenation */
+        if (op == OP_ADD && ltype == TYPE_STRING && rtype == TYPE_STRING)
+        {
+            fprintf(out, "quasar_strcat(");
+            emit_expression(left, out);
+            fprintf(out, ", ");
+            emit_expression(right, out);
+            fprintf(out, ")");
+            break;
+        }
+        /* String repetition */
+        if (op == OP_MUL)
+        {
+            if (ltype == TYPE_STRING && rtype == TYPE_INT)
+            {
+                fprintf(out, "quasar_strrep(");
+                emit_expression(left, out);
+                fprintf(out, ", ");
+                emit_expression(right, out);
+                fprintf(out, ")");
+                break;
+            }
+            if (ltype == TYPE_INT && rtype == TYPE_STRING)
+            {
+                fprintf(out, "quasar_strrep(");
+                emit_expression(right, out);
+                fprintf(out, ", ");
+                emit_expression(left, out);
+                fprintf(out, ")");
+                break;
+            }
+        }
         // Special case for exponent: use pow() function
-        if (node->data.binary.op == OP_POW)
+        if (op == OP_POW)
         {
             fprintf(out, "pow(");
             emit_expression(node->data.binary.left, out);
@@ -741,4 +769,51 @@ static void emit_expression(ASTNode *node, FILE *out)
     default:
         break;
     }
+}
+
+static void emit_runtime_helpers(FILE *out)
+{
+    fprintf(out, "/* Quasar runtime helpers */\n");
+
+    /* input() */
+    fprintf(out, "char *quasar_input(const char *prompt) {\n");
+    fprintf(out, "    if (prompt) printf(\"%%s\", prompt);\n");
+    fprintf(out, "    char buffer[1024];\n");
+    fprintf(out, "    if (fgets(buffer, sizeof(buffer), stdin)) {\n");
+    fprintf(out, "        size_t len = strlen(buffer);\n");
+    fprintf(out, "        if (len > 0 && buffer[len-1] == '\\n') buffer[len-1] = '\\0';\n");
+    fprintf(out, "        return strdup(buffer);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return strdup(\"\");\n");
+    fprintf(out, "}\n\n");
+
+    /* to_string() */
+    fprintf(out, "char *quasar_to_string(double x) {\n");
+    fprintf(out, "    char buffer[128];\n");
+    fprintf(out, "    snprintf(buffer, sizeof(buffer), \"%%g\", x);\n");
+    fprintf(out, "    return strdup(buffer);\n");
+    fprintf(out, "}\n\n");
+
+    /* String concatenation */
+    fprintf(out, "char *quasar_strcat(const char *a, const char *b) {\n");
+    fprintf(out, "    size_t len = strlen(a) + strlen(b) + 1;\n");
+    fprintf(out, "    char *result = (char*)malloc(len);\n");
+    fprintf(out, "    if (result) {\n");
+    fprintf(out, "        strcpy(result, a);\n");
+    fprintf(out, "        strcat(result, b);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return result;\n");
+    fprintf(out, "}\n\n");
+
+    /* String repetition */
+    fprintf(out, "char *quasar_strrep(const char *s, int n) {\n");
+    fprintf(out, "    if (n <= 0) return strdup(\"\");\n");
+    fprintf(out, "    size_t len = strlen(s) * n + 1;\n");
+    fprintf(out, "    char *result = (char*)malloc(len);\n");
+    fprintf(out, "    if (result) {\n");
+    fprintf(out, "        result[0] = '\\0';\n");
+    fprintf(out, "        for (int i = 0; i < n; i++) strcat(result, s);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return result;\n");
+    fprintf(out, "}\n\n");
 }

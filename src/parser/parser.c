@@ -56,7 +56,14 @@ static VarType infer_type(ASTNode *node)
         BinaryOp op = node->data.binary.op;
         if (op == OP_POW)
             return TYPE_FLOAT;
-
+        if (op == OP_ADD && left == TYPE_STRING && right == TYPE_STRING)
+            return TYPE_STRING;
+        if (op == OP_MUL)
+        {
+            if ((left == TYPE_STRING && right == TYPE_INT) ||
+                (left == TYPE_INT && right == TYPE_STRING))
+                return TYPE_STRING;
+        }
         // Arithmetic operators: if either operand is float, result is float; otherwise int.
         if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
             op == OP_MOD || op == OP_FLDIV)
@@ -133,8 +140,22 @@ static bool valid_binary_types(VarType left, VarType right, BinaryOp op)
     switch (op)
     {
     case OP_ADD:
-    case OP_SUB:
+        // string concatenation
+        if (left == TYPE_STRING && right == TYPE_STRING)
+            return true;
+        // numeric addition (fallthrough to arithmetic check)
+        return (left == TYPE_INT || left == TYPE_FLOAT) &&
+               (right == TYPE_INT || right == TYPE_FLOAT);
+
     case OP_MUL:
+        // string repetition
+        if ((left == TYPE_STRING && right == TYPE_INT) ||
+            (left == TYPE_INT && right == TYPE_STRING))
+            return true;
+        // numeric multiplication
+        return (left == TYPE_INT || left == TYPE_FLOAT) &&
+               (right == TYPE_INT || right == TYPE_FLOAT);
+    case OP_SUB:
     case OP_DIV:
     case OP_MOD:
     case OP_POW:
@@ -228,7 +249,7 @@ static bool check_binary_types(BinaryOp op, ASTNode *left, ASTNode *right)
 static VarType expr_type(ASTNode *node)
 {
     if (!node)
-        return TYPE_INT; // safe default
+        return TYPE_INT;
     switch (node->type)
     {
     case AST_INTEGER:
@@ -242,13 +263,19 @@ static VarType expr_type(ASTNode *node)
     case AST_BOOL:
         return TYPE_BOOL;
     case AST_VARIABLE:
-        return symtab_lookup(node->data.varName);
+        return symtab_lookup(node->data.varName); // keep for now (we'll migrate to varType later)
     case AST_INPUT:
         return TYPE_STRING;
     case AST_TYPE_CONV:
         return node->data.typeconv.target;
+    case AST_BINARY:
+    case AST_UNARY:
+        return infer_type(node); // use the fully‑fledged inference
+                                 // case AST_FUNC_CALL:
+        //  later return the function's declared return type; for now fallback
+        return infer_type(node);
     default:
-        return TYPE_INT;
+        return infer_type(node); // catch‑all for any future expression types
     }
 }
 
@@ -476,7 +503,7 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
         // plain assignment: use compatible_assignment
         if (!compatible_assignment(left_type, right_type))
         {
-            fprintf(stderr, "Error: type mismatch in assignment – expected %s but got %s\n",
+            fprintf(stderr, "Error: type mismatch in assignment - expected %s but got %s\n",
                     ctype_string(left_type), ctype_string(right_type));
             parse_errors++;
             return false;
@@ -1120,7 +1147,7 @@ static ASTNode *parse_assignment(char *name)
     VarType val_type = expr_type(value);
     if (!compatible_assignment(var_type, val_type))
     {
-        fprintf(stderr, "Error: type mismatch in assignment to '%s' – expected %s but got %s\n",
+        fprintf(stderr, "Error: type mismatch in assignment to '%s' - expected %s but got %s\n",
                 name, ctype_string(var_type), ctype_string(val_type));
         parse_errors++;
         free(name);
@@ -1399,7 +1426,7 @@ static ASTNode *parse_single_let(void)
     VarType init_type = expr_type(init); // or infer_type – both exist; use the parser's own
     if (!compatible_assignment(type, init_type))
     {
-        fprintf(stderr, "Error: type mismatch in 'let %s' – expected %s but got %s\n",
+        fprintf(stderr, "Error: type mismatch in 'let %s' - expected %s but got %s\n",
                 name, ctype_string(type), ctype_string(init_type));
         parse_errors++;
         free(name);
@@ -1511,7 +1538,7 @@ static ASTNode *parse_let_declaration(void)
     VarType init_type = infer_type(init); // or expr_type(init)
     if (!compatible_assignment(type, init_type))
     {
-        fprintf(stderr, "Error: type mismatch in 'let %s' – expected %s but got %s\n",
+        fprintf(stderr, "Error: type mismatch in 'let %s' - expected %s but got %s\n",
                 name, ctype_string(type), ctype_string(init_type));
         parse_errors++;
         free(name);
