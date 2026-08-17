@@ -28,6 +28,7 @@ static ASTNode *parse_single_let(void);
 static ASTNode *parse_return_statement(void);
 
 static VarType expr_type(ASTNode *node);
+static void build_print_format(ASTNode *print_node);
 static int parse_errors = 0;
 
 static VarType infer_type(ASTNode *node)
@@ -1201,13 +1202,104 @@ static ASTNode *parse_print_statement(void)
         free_ast(print_node);
         return NULL;
     }
-    // semicolon is optional? For now require it like before
+
     if (!expect(QTOKEN_SEMICOLON, "expected ';' after print statement"))
     {
         free_ast(print_node);
         return NULL;
     }
+    build_print_format(print_node);
     return print_node;
+}
+
+static void build_print_format(ASTNode *print_node)
+{
+    int n = print_node->data.print.count;
+
+    if (n == 0)
+    {
+        print_node->data.print.format = strdup("\n");
+        return;
+    }
+
+    // First pass: calculate needed length
+    size_t len = 0;
+    for (int i = 0; i < n; i++)
+    {
+        VarType t = infer_type(print_node->data.print.expressions[i]);
+        const char *spec;
+        switch (t)
+        {
+        case TYPE_INT:
+            spec = "%d";
+            break;
+        case TYPE_FLOAT:
+            spec = "%g";
+            break;
+        case TYPE_STRING:
+            spec = "%s";
+            break;
+        case TYPE_CHAR:
+            spec = "%c";
+            break;
+        case TYPE_BOOL:
+            spec = "%s";
+            break; // bool printed as "true"/"false"
+        default:
+            spec = "%d";
+            break;
+        }
+        len += strlen(spec);
+        if (i < n - 1)
+            len += 1; // space between args
+    }
+    len += 2; // backslash-n + null terminator
+
+    char *format = malloc(len + 1);
+    if (!format)
+    {
+        fprintf(stderr, "Memory error building print format\n");
+        return;
+    }
+
+    size_t pos = 0;
+    for (int i = 0; i < n; i++)
+    {
+        VarType t = infer_type(print_node->data.print.expressions[i]);
+        const char *spec;
+        switch (t)
+        {
+        case TYPE_INT:
+            spec = "%d";
+            break;
+        case TYPE_FLOAT:
+            spec = "%g";
+            break;
+        case TYPE_STRING:
+            spec = "%s";
+            break;
+        case TYPE_CHAR:
+            spec = "%c";
+            break;
+        case TYPE_BOOL:
+            spec = "%s";
+            break;
+        default:
+            spec = "%d";
+            break;
+        }
+        strcpy(format + pos, spec);
+        pos += strlen(spec);
+        if (i < n - 1)
+        {
+            format[pos++] = ' ';
+        }
+    }
+    format[pos++] = '\\';
+    format[pos++] = 'n';
+    format[pos] = '\0';
+
+    print_node->data.print.format = format;
 }
 
 static ASTNode *parse_assignment_expression(void)

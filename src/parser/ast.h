@@ -90,7 +90,8 @@ typedef struct ASTNode
             struct ASTNode **expressions; // array of expression nodes
             int count;
             int capacity;
-        } print; // for AST_PRINT
+            char *format; /* pre‑computed printf format string */
+        } print;          // for AST_PRINT
 
         struct
         {

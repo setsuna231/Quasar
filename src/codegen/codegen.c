@@ -147,50 +147,6 @@ static const char *op_to_cstring(BinaryOp op)
     }
 }
 
-static const char *format_spec_for(ASTNode *node)
-{
-    if (node->type == AST_VARIABLE)
-    {
-        // Directly look up the variable's type from the symbol table
-        VarType t = symtab_lookup(node->data.varName);
-        switch (t)
-        {
-        case TYPE_INT:
-            return "%d";
-        case TYPE_FLOAT:
-            return "%g";
-        case TYPE_STRING:
-            return "%s";
-        case TYPE_CHAR:
-            return "%c";
-        case TYPE_BOOL:
-            return "%s"; // true/false as string
-        default:
-            return "%d";
-        }
-    }
-    else
-    {
-        // For literals and other expressions, use infer_type
-        VarType type = infer_type(node);
-        switch (type)
-        {
-        case TYPE_INT:
-            return "%d";
-        case TYPE_FLOAT:
-            return "%g";
-        case TYPE_STRING:
-            return "%s";
-        case TYPE_CHAR:
-            return "%c";
-        case TYPE_BOOL:
-            return "%s";
-        default:
-            return "%d";
-        }
-    }
-}
-
 static void indent(FILE *out, int level)
 {
     for (int i = 0; i < level; i++)
@@ -253,25 +209,18 @@ static void emit_statement(ASTNode *node, FILE *out, int indent_level)
     case AST_PRINT:
     {
         indent(out, indent_level);
-        int n = node->data.print.count;
-        if (n == 0)
+        if (node->data.print.count == 0)
         {
             fprintf(out, "printf(\"\\n\");\n");
             break;
         }
 
-        // Build dynamic format string using format_spec_for
+        // Emit pre‑computed format string
         fprintf(out, "printf(\"");
-        for (int i = 0; i < n; i++)
-        {
-            fprintf(out, "%s", format_spec_for(node->data.print.expressions[i]));
-            if (i < n - 1)
-                fprintf(out, " ");
-        }
-        fprintf(out, "\\n\"");
+        fputs(node->data.print.format, out);
+        fprintf(out, "\"");
 
-        // Emit arguments, using the bool‑friendly wrapper
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < node->data.print.count; i++)
         {
             fprintf(out, ", ");
             emit_expression_maybe_bool(node->data.print.expressions[i], out);
@@ -700,22 +649,74 @@ static void emit_expression(ASTNode *node, FILE *out)
     {
         VarType target = node->data.typeconv.target;
         ASTNode *arg = node->data.typeconv.source;
+        VarType src_type = infer_type(arg);
 
         switch (target)
         {
         case TYPE_INT:
-            fprintf(out, "atoi(");
-            emit_expression(arg, out);
-            fprintf(out, ")");
+            if (src_type == TYPE_STRING)
+            {
+                fprintf(out, "atoi(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_FLOAT)
+            {
+                fprintf(out, "(int)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_CHAR)
+            {
+                fprintf(out, "(int)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_BOOL)
+            {
+                fprintf(out, "(int)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else
+            {
+                emit_expression(arg, out); // already int
+            }
             break;
+
         case TYPE_FLOAT:
-            fprintf(out, "atof(");
-            emit_expression(arg, out);
-            fprintf(out, ")");
+            if (src_type == TYPE_STRING)
+            {
+                fprintf(out, "atof(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_INT)
+            {
+                fprintf(out, "(double)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_CHAR)
+            {
+                fprintf(out, "(double)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else if (src_type == TYPE_BOOL)
+            {
+                fprintf(out, "(double)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
+            else
+            {
+                emit_expression(arg, out); // already float/double
+            }
             break;
+
         case TYPE_STRING:
-            // If arg is already string, just emit it; else use helper
-            if (infer_type(arg) == TYPE_STRING)
+            if (src_type == TYPE_STRING)
             {
                 emit_expression(arg, out);
             }
@@ -726,25 +727,34 @@ static void emit_expression(ASTNode *node, FILE *out)
                 fprintf(out, ")");
             }
             break;
+
         case TYPE_CHAR:
-            // If arg is int, just use (char); if string, take first char
-            if (infer_type(arg) == TYPE_INT)
+            if (src_type == TYPE_INT)
             {
                 fprintf(out, "(char)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else
+            else if (src_type == TYPE_STRING)
             {
-                // string: take first char, else '\\0'
                 fprintf(out, "(");
                 emit_expression(arg, out);
                 fprintf(out, ")[0]");
             }
+            else
+            {
+                fprintf(out, "(char)(");
+                emit_expression(arg, out);
+                fprintf(out, ")");
+            }
             break;
+
         case TYPE_BOOL:
-            // If arg is string, compare to "true"? Simpler: emit (strcmp(arg, "true")==0 || atoi(arg)!=0)
-            if (infer_type(arg) == TYPE_STRING)
+            if (src_type == TYPE_BOOL)
+            {
+                emit_expression(arg, out);
+            }
+            else if (src_type == TYPE_STRING)
             {
                 fprintf(out, "((strcmp(");
                 emit_expression(arg, out);
@@ -752,16 +762,15 @@ static void emit_expression(ASTNode *node, FILE *out)
                 emit_expression(arg, out);
                 fprintf(out, ") != 0))");
             }
-            else if (infer_type(arg) == TYPE_BOOL)
-            {
-                emit_expression(arg, out);
-            }
             else
             {
                 fprintf(out, "(");
                 emit_expression(arg, out);
                 fprintf(out, " != 0)");
             }
+            break;
+
+        default:
             break;
         }
         break;

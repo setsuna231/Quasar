@@ -35,6 +35,7 @@ ASTNode *make_print_empty(void)
     node->data.print.count = 0;
     node->data.print.capacity = 4; // start small
     node->data.print.expressions = malloc(sizeof(ASTNode *) * node->data.print.capacity);
+    node->data.print.format = NULL;
     if (!node->data.print.expressions)
     {
         free(node);
@@ -400,6 +401,7 @@ void free_ast(ASTNode *node)
     switch (node->type)
     {
     case AST_PRINT:
+        free(node->data.print.format);
         for (int i = 0; i < node->data.print.count; i++)
             free_ast(node->data.print.expressions[i]);
         free(node->data.print.expressions);
