@@ -30,6 +30,8 @@ typedef enum
     AST_TYPE_CONV,
     AST_RETURN,
     AST_FALLTHROUGH,
+    AST_FUNC_DEF,
+    AST_FUNC_CALL,
 } ASTNodeType;
 
 typedef enum
@@ -79,6 +81,7 @@ typedef struct
 typedef struct ASTNode
 {
     ASTNodeType type;
+    VarType varType;
     union
     {
         int intValue;
@@ -100,7 +103,8 @@ typedef struct ASTNode
             VarType vartype;
             struct ASTNode *init; // initializer expression
         } let;                    // for AST_LET
-        char *varName;            // for AST_VARIABLE
+
+        char *varName; // for AST_VARIABLE
 
         struct
         {
@@ -187,6 +191,31 @@ typedef struct ASTNode
         } typeconv;
 
         struct ASTNode *return_expr; // optional expression (NULL for bare return)
+
+        // Function definition
+        struct
+        {
+            char *name;
+            struct
+            {
+                char *name;
+                VarType type;
+            } *params;
+            int param_count;
+            int param_capacity;
+            VarType return_type;  // return type (TYPE_VOID if none)
+            struct ASTNode *body; // block body (AST_BLOCK)
+        } func_def;
+
+        // Function call
+        struct
+        {
+            char *name;
+            struct ASTNode **args;
+            int arg_count;
+            int arg_capacity;
+        } func_call;
+
     } data;
 } ASTNode;
 
@@ -198,7 +227,7 @@ ASTNode *make_float(double value);
 ASTNode *make_char(char value);
 ASTNode *make_bool(int value);
 ASTNode *make_let(const char *name, VarType type, ASTNode *init);
-ASTNode *make_variable(const char *name);
+ASTNode *make_variable(const char *name, VarType type);
 ASTNode *make_assign(const char *name, ASTNode *value);
 ASTNode *make_binary(BinaryOp op, ASTNode *left, ASTNode *right);
 ASTNode *make_block(void);
@@ -216,7 +245,11 @@ ASTNode *make_input(ASTNode *prompt);
 ASTNode *make_type_conv(VarType target, ASTNode *source);
 ASTNode *make_return(ASTNode *expr);
 ASTNode *make_fallthrough(void);
+ASTNode *make_func_def(const char *name, VarType return_type, ASTNode *body);
+ASTNode *make_func_call(const char *name);
 
+void func_def_add_param(ASTNode *func_def, const char *param_name, VarType param_type);
+void func_call_add_arg(ASTNode *func_call, ASTNode *arg);
 void multilet_add(ASTNode *multilet, ASTNode *decl);
 void match_add_case(ASTNode *match, ASTNode *value, ASTNode *body);
 void block_add_statement(ASTNode *block, ASTNode *stmt);       // allows {...} to be used

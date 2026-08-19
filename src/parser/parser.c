@@ -27,6 +27,8 @@ static ASTNode *parse_statement_list_until(const QTokenType terminals[], int n);
 static ASTNode *parse_single_let(void);
 static ASTNode *parse_return_statement(void);
 static ASTNode *parse_fallthrough_statement(void);
+static ASTNode *parse_func_def(void);
+static ASTNode *parse_func_call(const char *name);
 
 static VarType expr_type(ASTNode *node);
 static void build_print_format(ASTNode *print_node);
@@ -58,6 +60,10 @@ static VarType infer_type(ASTNode *node)
         BinaryOp op = node->data.binary.op;
         if (op == OP_POW)
             return TYPE_FLOAT;
+        if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT || op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
+        {
+            return TYPE_BOOL;
+        }
         if (op == OP_ADD && left == TYPE_STRING && right == TYPE_STRING)
             return TYPE_STRING;
         if (op == OP_MUL)
@@ -78,6 +84,27 @@ static VarType infer_type(ASTNode *node)
         // We'll handle them when we add those operators.
         return TYPE_INT; // fallback
     }
+
+    case AST_FUNC_CALL:
+    {
+        FuncInfo *fi = symtab_lookup_func(node->data.func_call.name);
+        if (fi)
+            return fi->return_type;
+        return TYPE_INT;
+    }
+
+    case AST_UNARY:
+    {
+        if (node->data.unary.op == UNARY_NOT)
+            return TYPE_BOOL;
+        if (node->data.unary.op == UNARY_PRE_INC || node->data.unary.op == UNARY_PRE_DEC ||
+            node->data.unary.op == UNARY_POST_INC || node->data.unary.op == UNARY_POST_DEC)
+            return infer_type(node->data.unary.operand);
+        return TYPE_INT;
+    }
+
+    case AST_TYPE_CONV:
+        return node->data.typeconv.target;
 
     default:
         return TYPE_INT; // safe fallback for any unknown node
@@ -166,7 +193,8 @@ static bool valid_binary_types(VarType left, VarType right, BinaryOp op)
                (right == TYPE_INT || right == TYPE_FLOAT);
     case OP_EQ:
     case OP_NE:
-        // Allow int/float/bool mixing (bool is now a distinct type but comparable)
+        if (left == TYPE_STRING && right == TYPE_STRING)
+            return true;
         return (left == TYPE_INT || left == TYPE_FLOAT || left == TYPE_BOOL) &&
                (right == TYPE_INT || right == TYPE_FLOAT || right == TYPE_BOOL);
     case OP_LT:
@@ -295,6 +323,8 @@ static VarType token_to_vartype(QTokenType type)
         return TYPE_CHAR;
     case QTOKEN_TYPE_BOOL:
         return TYPE_BOOL;
+    case QTOKEN_TYPE_VOID:
+        return TYPE_VOID;
     default:
         return TYPE_INT; // error, but keep going
     }
@@ -398,6 +428,12 @@ const char *token_name(QTokenType type)
         return "'return'";
     case QTOKEN_FALLTHROUGH:
         return "'fallthrough'";
+    case QTOKEN_FUNC:
+        return "'func'";
+    case QTOKEN_ARROW:
+        return "'->'";
+    case QTOKEN_TYPE_VOID:
+        return "'void'";
     default:
         return "???";
     }
@@ -601,17 +637,33 @@ static ASTNode *parse_fallthrough_statement(void)
 
 static ASTNode *parse_postfix(void)
 {
-    ASTNode *node = parse_primary(); // get the operand (identifier, literal, etc.)
-    while (g_current.type == QTOKEN_INC || g_current.type == QTOKEN_DEC)
+    ASTNode *node = parse_primary();
+    while (1)
     {
-        UnaryOp op = (g_current.type == QTOKEN_INC) ? UNARY_POST_INC : UNARY_POST_DEC;
-        advance(); // consume '++' or '--'
-        node = make_unary(op, node);
-        // Type check the postfix operator
-        if (!check_unary_types(op, node->data.unary.operand))
+        if (g_current.type == QTOKEN_INC || g_current.type == QTOKEN_DEC)
         {
+            UnaryOp op = (g_current.type == QTOKEN_INC) ? UNARY_POST_INC : UNARY_POST_DEC;
+            advance();
+            node = make_unary(op, node);
+            if (!check_unary_types(op, node->data.unary.operand))
+            {
+                free_ast(node);
+                return NULL;
+            }
+        }
+        else if (g_current.type == QTOKEN_LPAREN && node->type == AST_VARIABLE)
+        {
+            // Function call
+            char *fname = strdup(node->data.varName);
             free_ast(node);
-            return NULL;
+            node = parse_func_call(fname);
+            free(fname);
+            if (!node)
+                return NULL;
+        }
+        else
+        {
+            break;
         }
     }
     return node;
@@ -1107,6 +1159,8 @@ static ASTNode *parse_primary(void)
                 fprintf(stderr, "Warning: to_bool expects a string, bool, or number\n");
             }
             break;
+        case TYPE_VOID:
+            break;
         }
 
         return make_type_conv(target, arg);
@@ -1115,7 +1169,8 @@ static ASTNode *parse_primary(void)
     {
         char *name = strdup(g_current.str);
         advance();
-        return make_variable(name);
+        VarType vt = symtab_lookup(name);
+        return make_variable(name, vt);
     }
     if (g_current.type == QTOKEN_LPAREN)
     {
@@ -1769,6 +1824,196 @@ static ASTNode *parse_for_statement(void)
     return make_for(init, condition, update, body);
 }
 
+static ASTNode *parse_func_def(void)
+{
+    advance(); // consume 'func'
+
+    // Function name
+    if (g_current.type != QTOKEN_IDENTIFIER)
+    {
+        fprintf(stderr, "Error: expected function name after 'func'\n");
+        parse_errors++;
+        return NULL;
+    }
+    char *fname = strdup(g_current.str);
+    advance();
+
+    // (
+    if (!expect(QTOKEN_LPAREN, "expected '(' after function name"))
+    {
+        free(fname);
+        return NULL;
+    }
+
+    // Create function node early (we need it to add params)
+    ASTNode *func = make_func_def(fname, TYPE_VOID, NULL);
+    free(fname); // node has its own copy
+
+    // Temporary array for symbol table
+    VarType *param_types = NULL;
+    int param_count = 0;
+
+    // Parameters
+    if (g_current.type != QTOKEN_RPAREN)
+    {
+        while (1)
+        {
+            // param name
+            if (g_current.type != QTOKEN_IDENTIFIER)
+            {
+                fprintf(stderr, "Error: expected parameter name\n");
+                parse_errors++;
+                break;
+            }
+            char *pname = strdup(g_current.str);
+            advance();
+
+            // :
+            if (!expect(QTOKEN_COLON, "expected ':' after parameter name"))
+            {
+                free(pname);
+                break;
+            }
+
+            // parameter type
+            VarType ptype;
+            if (g_current.type == QTOKEN_TYPE_INT || g_current.type == QTOKEN_TYPE_FLOAT ||
+                g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
+                g_current.type == QTOKEN_TYPE_BOOL)
+            {
+                ptype = token_to_vartype(g_current.type);
+                advance();
+            }
+            else
+            {
+                fprintf(stderr, "Error: expected type for parameter '%s'\n", pname);
+                parse_errors++;
+                free(pname);
+                break;
+            }
+
+            // add to AST node
+            func_def_add_param(func, pname, ptype);
+
+            // record for symbol table
+            param_types = realloc(param_types, (param_count + 1) * sizeof(VarType));
+            param_types[param_count++] = ptype;
+
+            free(pname);
+
+            if (g_current.type == QTOKEN_COMMA)
+                advance();
+            else
+                break;
+        }
+    }
+
+    if (!expect(QTOKEN_RPAREN, "expected ')' after parameters"))
+    {
+        free_ast(func);
+        free(param_types);
+        return NULL;
+    }
+
+    // Return type (optional arrow)
+    VarType ret_type = TYPE_VOID;
+    if (g_current.type == QTOKEN_ARROW)
+    {
+        advance(); // consume ->
+        if (g_current.type == QTOKEN_TYPE_INT || g_current.type == QTOKEN_TYPE_FLOAT ||
+            g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
+            g_current.type == QTOKEN_TYPE_BOOL || g_current.type == QTOKEN_TYPE_VOID)
+        {
+            ret_type = token_to_vartype(g_current.type);
+            advance();
+        }
+        else
+        {
+            fprintf(stderr, "Error: expected return type after '->'\n");
+            parse_errors++;
+            free_ast(func);
+            free(param_types);
+            return NULL;
+        }
+    }
+    func->data.func_def.return_type = ret_type;
+
+    // Register function BEFORE parsing body (so recursion works)
+    symtab_add_func(func->data.func_def.name, ret_type, param_types, param_count);
+    free(param_types);
+
+    // Body must be a block
+    if (g_current.type != QTOKEN_LBRACE)
+    {
+        fprintf(stderr, "Error: expected '{' to start function body\n");
+        parse_errors++;
+        free_ast(func);
+        return NULL;
+    }
+
+    // Push function scope, add parameters to it
+    symtab_push_scope();
+    for (int i = 0; i < func->data.func_def.param_count; i++)
+    {
+        symtab_add(func->data.func_def.params[i].name,
+                   func->data.func_def.params[i].type);
+    }
+
+    // Parse body (parse_block pushes its own inner scope)
+    ASTNode *body = parse_block();
+    if (!body)
+    {
+        symtab_pop_scope();
+        free_ast(func);
+        return NULL;
+    }
+
+    // Pop function scope (body's inner scope already popped by parse_block)
+    symtab_pop_scope();
+
+    func->data.func_def.body = body;
+    return func;
+}
+
+static ASTNode *parse_func_call(const char *name)
+{
+    // current token should be '('
+    if (g_current.type != QTOKEN_LPAREN)
+    {
+        fprintf(stderr, "Error: expected '(' in function call\n");
+        parse_errors++;
+        return NULL;
+    }
+    advance(); // consume '('
+
+    ASTNode *call = make_func_call(name);
+
+    if (g_current.type != QTOKEN_RPAREN)
+    {
+        while (1)
+        {
+            ASTNode *arg = parse_expression();
+            if (!arg)
+            {
+                free_ast(call);
+                return NULL;
+            }
+            func_call_add_arg(call, arg);
+            if (g_current.type == QTOKEN_COMMA)
+                advance();
+            else
+                break;
+        }
+    }
+
+    if (!expect(QTOKEN_RPAREN, "expected ')' after arguments"))
+    {
+        free_ast(call);
+        return NULL;
+    }
+    return call;
+}
+
 static ASTNode *parse_statement(void)
 {
     switch (g_current.type)
@@ -1781,6 +2026,21 @@ static ASTNode *parse_statement(void)
     {
         char *name = strdup(g_current.str);
         advance(); // consume identifier
+
+        // for standalone funcs
+        if (g_current.type == QTOKEN_LPAREN)
+        {
+            ASTNode *call = parse_func_call(name);
+            free(name);
+            if (!call)
+                return NULL;
+            if (!expect(QTOKEN_SEMICOLON, "expected ';' after function call"))
+            {
+                free_ast(call);
+                return NULL;
+            }
+            return make_expr_statement(call);
+        }
 
         // Check for compound assignment tokens first
         BinaryOp compound_op;
@@ -1829,7 +2089,8 @@ static ASTNode *parse_statement(void)
                 return NULL;
             }
 
-            ASTNode *var = make_variable(name);
+            VarType vt = symtab_lookup(name);
+            ASTNode *var = make_variable(name, vt);
             if (!var)
             {
                 free(name);
@@ -1881,7 +2142,8 @@ static ASTNode *parse_statement(void)
         {
             UnaryOp op = (g_current.type == QTOKEN_INC) ? UNARY_POST_INC : UNARY_POST_DEC;
             advance();
-            ASTNode *var = make_variable(name);
+            VarType vt = symtab_lookup(name);
+            ASTNode *var = make_variable(name, vt);
             if (!var)
             {
                 free(name);
@@ -1903,7 +2165,8 @@ static ASTNode *parse_statement(void)
         }
 
         // Any other token: treat the identifier alone as an expression statement
-        ASTNode *var = make_variable(name);
+        VarType vt = symtab_lookup(name);
+        ASTNode *var = make_variable(name, vt);
         free(name);
         if (!var)
             return NULL;
@@ -1934,6 +2197,8 @@ static ASTNode *parse_statement(void)
         return parse_return_statement();
     case QTOKEN_FALLTHROUGH:
         return parse_fallthrough_statement();
+    case QTOKEN_FUNC:
+        return parse_func_def();
     default:
         if (is_expression_start(g_current.type))
         {

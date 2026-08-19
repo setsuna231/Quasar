@@ -65,6 +65,10 @@ static QTokenType check_keyword(const char *word)
         return QTOKEN_RETURN;
     if (strcmp(word, "fallthrough") == 0)
         return QTOKEN_FALLTHROUGH;
+    if (strcmp(word, "func") == 0)
+        return QTOKEN_FUNC;
+    if (strcmp(word, "void") == 0)
+        return QTOKEN_TYPE_VOID;
     return QTOKEN_UNKNOWN; // not a keyword, to identify err
 }
 
@@ -448,6 +452,12 @@ Token get_next_token(const char *source, int *pos)
         }
     case '-':
         (*pos)++;
+        if (source[*pos] == '>')
+        {
+            (*pos)++;
+            Token t = {.type = QTOKEN_ARROW, .value = 0, .str = NULL};
+            return t;
+        }
         if (source[*pos] == '-')
         { // --
             (*pos)++;

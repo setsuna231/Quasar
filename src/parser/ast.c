@@ -168,13 +168,14 @@ void multilet_add(ASTNode *multilet, ASTNode *decl)
     multilet->data.multilet.declarations[multilet->data.multilet.count++] = decl;
 }
 
-ASTNode *make_variable(const char *name)
+ASTNode *make_variable(const char *name, VarType type)
 {
     ASTNode *node = malloc(sizeof(ASTNode));
     if (!node)
         return NULL;
     node->type = AST_VARIABLE;
     node->data.varName = strdup(name);
+    node->varType = type;
     return node;
 }
 
@@ -404,6 +405,83 @@ ASTNode *make_fallthrough(void)
     return node;
 }
 
+// for functions
+ASTNode *make_func_def(const char *name, VarType return_type, ASTNode *body)
+{
+    ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
+    if (!node)
+        return NULL;
+    node->type = AST_FUNC_DEF;
+    node->data.func_def.name = strdup(name);
+    node->data.func_def.return_type = return_type;
+    node->data.func_def.body = body;
+    node->data.func_def.param_capacity = 2;
+    node->data.func_def.param_count = 0;
+    node->data.func_def.params = malloc(sizeof(*node->data.func_def.params) *
+                                        node->data.func_def.param_capacity);
+    if (!node->data.func_def.params)
+    {
+        free(node->data.func_def.name);
+        free(node);
+        return NULL;
+    }
+    return node;
+}
+
+void func_def_add_param(ASTNode *func_def, const char *param_name, VarType param_type)
+{
+    if (!func_def || func_def->type != AST_FUNC_DEF)
+        return;
+
+    if (func_def->data.func_def.param_count >= func_def->data.func_def.param_capacity)
+    {
+        func_def->data.func_def.param_capacity *= 2;
+        func_def->data.func_def.params = realloc(func_def->data.func_def.params,
+                                                 sizeof(*func_def->data.func_def.params) * func_def->data.func_def.param_capacity);
+        if (!func_def->data.func_def.params)
+            return;
+    }
+
+    int i = func_def->data.func_def.param_count++;
+    func_def->data.func_def.params[i].name = strdup(param_name);
+    func_def->data.func_def.params[i].type = param_type;
+}
+
+ASTNode *make_func_call(const char *name)
+{
+    ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
+    if (!node)
+        return NULL;
+    node->type = AST_FUNC_CALL;
+    node->data.func_call.name = strdup(name);
+    node->data.func_call.arg_capacity = 4;
+    node->data.func_call.arg_count = 0;
+    node->data.func_call.args = malloc(sizeof(ASTNode *) * node->data.func_call.arg_capacity);
+    if (!node->data.func_call.args)
+    {
+        free(node->data.func_call.name);
+        free(node);
+        return NULL;
+    }
+    return node;
+}
+
+void func_call_add_arg(ASTNode *func_call, ASTNode *arg)
+{
+    if (!func_call || func_call->type != AST_FUNC_CALL)
+        return;
+
+    if (func_call->data.func_call.arg_count >= func_call->data.func_call.arg_capacity)
+    {
+        func_call->data.func_call.arg_capacity *= 2;
+        func_call->data.func_call.args = realloc(func_call->data.func_call.args,
+                                                 sizeof(ASTNode *) * func_call->data.func_call.arg_capacity);
+        if (!func_call->data.func_call.args)
+            return;
+    }
+    func_call->data.func_call.args[func_call->data.func_call.arg_count++] = arg;
+}
+
 void free_ast(ASTNode *node)
 {
     if (!node)
@@ -505,6 +583,22 @@ void free_ast(ASTNode *node)
         break;
     case AST_RETURN:
         free_ast(node->data.return_expr);
+        break;
+    case AST_FUNC_DEF:
+        free(node->data.func_def.name);
+        for (int i = 0; i < node->data.func_def.param_count; i++)
+        {
+            free(node->data.func_def.params[i].name);
+        }
+        free(node->data.func_def.params);
+        free_ast(node->data.func_def.body);
+        break;
+
+    case AST_FUNC_CALL:
+        free(node->data.func_call.name);
+        for (int i = 0; i < node->data.func_call.arg_count; i++)
+            free_ast(node->data.func_call.args[i]);
+        free(node->data.func_call.args);
         break;
     default:
         break;

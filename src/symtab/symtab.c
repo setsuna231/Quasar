@@ -5,6 +5,7 @@
 
 #define MAX_VARS 256
 #define MAX_SCOPES 64
+#define MAX_FUNCS 256
 
 typedef struct
 {
@@ -20,6 +21,8 @@ typedef struct
 
 static Scope scopes[MAX_SCOPES];
 static int scope_top = -1;
+static FuncInfo func_table[MAX_FUNCS];
+static int func_count = 0;
 
 void symtab_push_scope(void)
 {
@@ -76,6 +79,46 @@ VarType symtab_lookup(const char *name)
     return TYPE_INT; // add a sentinel later
 }
 
+void symtab_add_func(const char *name, VarType return_type, VarType *param_types, int param_count)
+{
+    if (func_count >= MAX_FUNCS)
+    {
+        fprintf(stderr, "Fatal: too many functions (max %d)\n", MAX_FUNCS);
+        exit(1);
+    }
+
+    FuncInfo *f = &func_table[func_count++];
+    strncpy(f->name, name, 63);
+    f->name[63] = '\0';
+    f->return_type = return_type;
+    f->param_count = param_count;
+
+    if (param_count > 0 && param_types)
+    {
+        f->param_types = malloc(param_count * sizeof(VarType));
+        if (!f->param_types)
+        {
+            fprintf(stderr, "Memory error in symtab_add_func\n");
+            exit(1);
+        }
+        memcpy(f->param_types, param_types, param_count * sizeof(VarType));
+    }
+    else
+    {
+        f->param_types = NULL;
+    }
+}
+
+FuncInfo *symtab_lookup_func(const char *name)
+{
+    for (int i = 0; i < func_count; i++)
+    {
+        if (strcmp(func_table[i].name, name) == 0)
+            return &func_table[i];
+    }
+    return NULL;
+}
+
 const char *ctype_string(VarType type)
 {
     switch (type)
@@ -90,6 +133,8 @@ const char *ctype_string(VarType type)
         return "char";
     case TYPE_BOOL:
         return "bool";
+    case TYPE_VOID:
+        return "void";
     default:
         return "int";
     }
@@ -109,6 +154,8 @@ const char *ctype_spec_string(VarType type)
         return "%c";
     case TYPE_BOOL:
         return "%d";
+    case TYPE_VOID:
+        return ""; // no spec for void
     default:
         return "%d";
     }

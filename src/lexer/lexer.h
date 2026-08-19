@@ -71,6 +71,9 @@ typedef enum
     QTOKEN_TO_BOOL,   // for to_bool
     QTOKEN_RETURN,
     QTOKEN_FALLTHROUGH, // for fallthough
+    QTOKEN_FUNC,        // for func
+    QTOKEN_ARROW,       // for ->
+    QTOKEN_TYPE_VOID,   // for void
     QTOKEN_UNKNOWN
 } QTokenType;
 

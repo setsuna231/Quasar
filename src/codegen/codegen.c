@@ -7,6 +7,7 @@
 static void emit_statement(ASTNode *node, FILE *out, int indent);
 static void emit_expression(ASTNode *node, FILE *out);
 static void emit_runtime_helpers(FILE *out);
+static void emit_function_definition(ASTNode *node, FILE *out);
 
 // Returns the Quasar variable type of an expression node.
 static VarType infer_type(ASTNode *node)
@@ -25,8 +26,15 @@ static VarType infer_type(ASTNode *node)
         return TYPE_CHAR;
     case AST_BOOL:
         return TYPE_BOOL;
+    case AST_FUNC_CALL:
+    {
+        FuncInfo *fi = symtab_lookup_func(node->data.func_call.name);
+        if (fi)
+            return fi->return_type;
+        return TYPE_INT; // fallback
+    }
     case AST_VARIABLE:
-        return symtab_lookup(node->data.varName);
+        return node->varType;
 
     case AST_BINARY:
     {
@@ -170,18 +178,73 @@ void generate_code(ASTNode *program, FILE *out)
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <math.h>\n\n");
 
+    /* Runtime helpers */
     emit_runtime_helpers(out);
+
+    /* Function prototypes */
+    for (int i = 0; i < program->data.program.count; i++)
+    {
+        ASTNode *stmt = program->data.program.statements[i];
+        if (stmt->type == AST_FUNC_DEF)
+        {
+            fprintf(out, "%s %s(", ctype_string(stmt->data.func_def.return_type),
+                    stmt->data.func_def.name);
+            for (int j = 0; j < stmt->data.func_def.param_count; j++)
+            {
+                if (j > 0)
+                    fprintf(out, ", ");
+                fprintf(out, "%s %s", ctype_string(stmt->data.func_def.params[j].type),
+                        stmt->data.func_def.params[j].name);
+            }
+            fprintf(out, ");\n");
+        }
+    }
+    fprintf(out, "\n");
+
+    /* Function definitions */
+    for (int i = 0; i < program->data.program.count; i++)
+    {
+        ASTNode *stmt = program->data.program.statements[i];
+        if (stmt->type == AST_FUNC_DEF)
+        {
+            emit_function_definition(stmt, out);
+            fprintf(out, "\n");
+        }
+    }
 
     /* Main function */
     fprintf(out, "int main(void) {\n");
 
-    // Emit all statements (no more helpers here!)
+    // Emit top-level statements (skip function definitions)
     for (int i = 0; i < program->data.program.count; i++)
     {
-        emit_statement(program->data.program.statements[i], out, 1);
+        ASTNode *stmt = program->data.program.statements[i];
+        if (stmt->type != AST_FUNC_DEF)
+        {
+            emit_statement(stmt, out, 1);
+        }
     }
 
     fprintf(out, "\treturn 0;\n");
+    fprintf(out, "}\n");
+}
+static void emit_function_definition(ASTNode *node, FILE *out)
+{
+    if (node->type != AST_FUNC_DEF)
+        return;
+
+    fprintf(out, "%s %s(", ctype_string(node->data.func_def.return_type),
+            node->data.func_def.name);
+
+    for (int i = 0; i < node->data.func_def.param_count; i++)
+    {
+        if (i > 0)
+            fprintf(out, ", ");
+        fprintf(out, "%s %s", ctype_string(node->data.func_def.params[i].type),
+                node->data.func_def.params[i].name);
+    }
+    fprintf(out, ") {\n");
+    emit_statement(node->data.func_def.body, out, 1); // body is AST_BLOCK
     fprintf(out, "}\n");
 }
 
@@ -551,6 +614,16 @@ static void emit_expression(ASTNode *node, FILE *out)
         VarType ltype = infer_type(left);
         VarType rtype = infer_type(right);
 
+        if ((op == OP_EQ || op == OP_NE) && ltype == TYPE_STRING && rtype == TYPE_STRING)
+        {
+            fprintf(out, "(strcmp(");
+            emit_expression(left, out);
+            fprintf(out, ", ");
+            emit_expression(right, out);
+            fprintf(out, ") %s 0)", op == OP_EQ ? "==" : "!=");
+            break;
+        }
+
         /* String concatenation */
         if (op == OP_ADD && ltype == TYPE_STRING && rtype == TYPE_STRING)
         {
@@ -786,6 +859,19 @@ static void emit_expression(ASTNode *node, FILE *out)
         }
         break;
     }
+    case AST_FUNC_CALL:
+    {
+        fprintf(out, "%s(", node->data.func_call.name);
+        for (int i = 0; i < node->data.func_call.arg_count; i++)
+        {
+            if (i > 0)
+                fprintf(out, ", ");
+            emit_expression(node->data.func_call.args[i], out);
+        }
+        fprintf(out, ")");
+        break;
+    }
+
     default:
         break;
     }
