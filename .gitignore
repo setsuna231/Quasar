@@ -1,9 +1,17 @@
-*.exe
+# Ignore personal examples
+examples/
+
+# Ignore generated build outputs
+build/
+executables/
+
+# Ignore object files and executables
 *.o
+*.exe
 *.qsc
 *.qsr
 *.txt
-*.qs
-build/
-executables/
-examples/
+
+# Do NOT ignore .qs in tests/
+!tests/
+!tests/*.qs
