@@ -394,6 +394,16 @@ ASTNode *make_return(ASTNode *expr)
     return node;
 }
 
+// for fallthrough
+ASTNode *make_fallthrough(void)
+{
+    ASTNode *node = malloc(sizeof(ASTNode));
+    if (!node)
+        return NULL;
+    node->type = AST_FALLTHROUGH;
+    return node;
+}
+
 void free_ast(ASTNode *node)
 {
     if (!node)

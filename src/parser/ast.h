@@ -29,6 +29,7 @@ typedef enum
     AST_INPUT,
     AST_TYPE_CONV,
     AST_RETURN,
+    AST_FALLTHROUGH,
 } ASTNodeType;
 
 typedef enum
@@ -214,6 +215,7 @@ ASTNode *make_multilet(void);
 ASTNode *make_input(ASTNode *prompt);
 ASTNode *make_type_conv(VarType target, ASTNode *source);
 ASTNode *make_return(ASTNode *expr);
+ASTNode *make_fallthrough(void);
 
 void multilet_add(ASTNode *multilet, ASTNode *decl);
 void match_add_case(ASTNode *match, ASTNode *value, ASTNode *body);

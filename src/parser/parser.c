@@ -26,6 +26,7 @@ static ASTNode *parse_match_statement(void);
 static ASTNode *parse_statement_list_until(const QTokenType terminals[], int n);
 static ASTNode *parse_single_let(void);
 static ASTNode *parse_return_statement(void);
+static ASTNode *parse_fallthrough_statement(void);
 
 static VarType expr_type(ASTNode *node);
 static void build_print_format(ASTNode *print_node);
@@ -395,6 +396,8 @@ const char *token_name(QTokenType type)
         return "'to_bool'";
     case QTOKEN_RETURN:
         return "'return'";
+    case QTOKEN_FALLTHROUGH:
+        return "'fallthrough'";
     default:
         return "???";
     }
@@ -586,6 +589,14 @@ static ASTNode *parse_return_statement(void)
     }
 
     return make_return(expr);
+}
+
+static ASTNode *parse_fallthrough_statement(void)
+{
+    advance(); // consume 'fallthrough'
+    if (!expect(QTOKEN_SEMICOLON, "expected ';' after 'fallthrough'"))
+        return NULL;
+    return make_fallthrough();
 }
 
 static ASTNode *parse_postfix(void)
@@ -1921,6 +1932,8 @@ static ASTNode *parse_statement(void)
         return parse_match_statement();
     case QTOKEN_RETURN:
         return parse_return_statement();
+    case QTOKEN_FALLTHROUGH:
+        return parse_fallthrough_statement();
     default:
         if (is_expression_start(g_current.type))
         {

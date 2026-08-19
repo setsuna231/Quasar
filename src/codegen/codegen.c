@@ -368,6 +368,12 @@ static void emit_statement(ASTNode *node, FILE *out, int indent_level)
             ASTNode *value = node->data.match.cases[i].value;
             ASTNode *body = node->data.match.cases[i].body;
 
+            if (i > 0)
+            {
+                indent(out, indent_level);
+                fprintf(out, "/* fall through */\n");
+            }
+
             if (value)
             {
                 indent(out, indent_level);
@@ -419,6 +425,11 @@ static void emit_statement(ASTNode *node, FILE *out, int indent_level)
         {
             fprintf(out, "return;\n");
         }
+        break;
+
+    case AST_FALLTHROUGH:
+        indent(out, indent_level);
+        fprintf(out, "/* fall through */\n");
         break;
 
     default:

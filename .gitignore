@@ -3,6 +3,7 @@
 *.qsc
 *.qsr
 *.txt
+*.qs
 build/
 executables/
 examples/

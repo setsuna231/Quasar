@@ -70,6 +70,7 @@ typedef enum
     QTOKEN_TO_CHAR,   // for to_char
     QTOKEN_TO_BOOL,   // for to_bool
     QTOKEN_RETURN,
+    QTOKEN_FALLTHROUGH, // for fallthough
     QTOKEN_UNKNOWN
 } QTokenType;
 
