@@ -2,10 +2,18 @@
 #include "parser/parser.h"
 #include "lexer/lexer.h"
 #include "symtab/symtab.h"
+#include "error/error.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+
+static const char *g_source;
+static int g_pos;
+static Token g_current;
+
+#define ERROR_AT(...) parser_error_report(g_current.line, g_current.col, __VA_ARGS__)
+#define WARNING_AT(...) parser_warning_report(g_current.line, g_current.col, __VA_ARGS__)
 
 static ASTNode *parse_expression(void);
 static ASTNode *parse_statement(void);
@@ -118,7 +126,7 @@ static bool check_unary_types(UnaryOp op, ASTNode *operand)
     {
         if (t != TYPE_INT && t != TYPE_FLOAT && t != TYPE_BOOL)
         {
-            fprintf(stderr, "Error: invalid operand type for '!': %s\n", ctype_string(t));
+            ERROR_AT("invalid operand type for '!': %s\n", ctype_string(t));
             parse_errors++;
             return false;
         }
@@ -127,8 +135,8 @@ static bool check_unary_types(UnaryOp op, ASTNode *operand)
     {
         if (t != TYPE_INT && t != TYPE_FLOAT)
         {
-            fprintf(stderr, "Error: invalid operand type for unary '%c': %s\n",
-                    op == UNARY_MINUS ? '-' : '+', ctype_string(t));
+            ERROR_AT("invalid operand type for unary '%c': %s\n",
+                     op == UNARY_MINUS ? '-' : '+', ctype_string(t));
             parse_errors++;
             return false;
         }
@@ -139,13 +147,13 @@ static bool check_unary_types(UnaryOp op, ASTNode *operand)
         // Must be a variable (identifier) and numeric.
         if (operand->type != AST_VARIABLE)
         {
-            fprintf(stderr, "Error: increment/decrement operand must be a variable\n");
+            ERROR_AT("increment/decrement operand must be a variable\n");
             parse_errors++;
             return false;
         }
         if (t != TYPE_INT && t != TYPE_FLOAT)
         {
-            fprintf(stderr, "Error: invalid operand type for ++/--: %s\n", ctype_string(t));
+            ERROR_AT("invalid operand type for ++/--: %s\n", ctype_string(t));
             parse_errors++;
             return false;
         }
@@ -220,56 +228,60 @@ static bool check_binary_types(BinaryOp op, ASTNode *left, ASTNode *right)
     VarType rtype = infer_type(right);
     if (!valid_binary_types(ltype, rtype, op))
     {
-        fprintf(stderr, "Error: invalid operand types for ");
         // Determine if it's arithmetic or relational based on op
         bool is_relational = (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT || op == OP_LE || op == OP_GE);
-        fprintf(stderr, "%s operator (", is_relational ? "relational" : "arithmetic");
+        char op_str[8] = "?";
         switch (op)
         {
         case OP_ADD:
-            fprintf(stderr, "+");
+            strcpy(op_str, "+");
             break;
         case OP_SUB:
-            fprintf(stderr, "-");
+            strcpy(op_str, "-");
             break;
         case OP_MUL:
-            fprintf(stderr, "*");
+            strcpy(op_str, "*");
             break;
         case OP_DIV:
-            fprintf(stderr, "/");
+            strcpy(op_str, "/");
             break;
         case OP_MOD:
-            fprintf(stderr, "%%");
+            strcpy(op_str, "%%");
             break;
         case OP_POW:
-            fprintf(stderr, "**");
+            strcpy(op_str, "**");
             break;
         case OP_FLDIV:
-            fprintf(stderr, "//");
+            strcpy(op_str, "//");
             break;
         case OP_EQ:
-            fprintf(stderr, "==");
+            strcpy(op_str, "==");
             break;
         case OP_NE:
-            fprintf(stderr, "!=");
+            strcpy(op_str, "!=");
             break;
         case OP_LT:
-            fprintf(stderr, "<");
+            strcpy(op_str, "<");
             break;
         case OP_GT:
-            fprintf(stderr, ">");
+            strcpy(op_str, ">");
             break;
         case OP_LE:
-            fprintf(stderr, "<=");
+            strcpy(op_str, "<=");
             break;
         case OP_GE:
-            fprintf(stderr, ">=");
+            strcpy(op_str, ">=");
             break;
         default:
-            fprintf(stderr, "?");
+            strcpy(op_str, "?");
             break;
         }
-        fprintf(stderr, "): %s and %s\n", ctype_string(ltype), ctype_string(rtype));
+
+        ERROR_AT("invalid operand types for %s operator (%s): %s and %s\n",
+                 is_relational ? "relational" : "arithmetic",
+                 op_str,
+                 ctype_string(ltype),
+                 ctype_string(rtype));
         parse_errors++;
         return false;
     }
@@ -451,13 +463,26 @@ static bool is_expression_start(QTokenType type)
 }
 
 // --- Lexer interface ---
-static const char *g_source;
-static int g_pos;
-static Token g_current;
-
 static void advance(void)
 {
     g_current = get_next_token(g_source, &g_pos);
+
+    // Compute line and column from current source position
+    int line = 1, col = 1;
+    for (int i = 0; i < g_pos; i++)
+    {
+        if (g_source[i] == '\n')
+        {
+            line++;
+            col = 1;
+        }
+        else
+        {
+            col++;
+        }
+    }
+    g_current.line = line;
+    g_current.col = col;
 }
 
 static bool match(QTokenType type)
@@ -475,10 +500,10 @@ static bool expect(QTokenType type, const char *context)
 {
     if (!match(type))
     {
-        fprintf(stderr, "Parse error: expected %s", token_name(type));
         if (context)
-            fprintf(stderr, " (%s)", context);
-        fprintf(stderr, ", but got %s\n", token_name(g_current.type));
+            ERROR_AT("%s, but got %s\n", context, token_name(g_current.type));
+        else
+            ERROR_AT("expected %s, but got %s\n", token_name(type), token_name(g_current.type));
         parse_errors++;
         return false;
     }
@@ -490,7 +515,7 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
     // left must be a plain variable (for now)
     if (left->type != AST_VARIABLE)
     {
-        fprintf(stderr, "Error: left side of assignment must be a variable\n");
+        ERROR_AT("left side of assignment must be a variable\n");
         parse_errors++;
         return false;
     }
@@ -533,7 +558,7 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
         // reuse your existing arithmetic type‑check
         if (!valid_binary_types(left_type, right_type, inner_op))
         {
-            fprintf(stderr, "Error: invalid operand types for compound assignment\n");
+            ERROR_AT("invalid operand types for compound assignment\n");
             parse_errors++;
             return false;
         }
@@ -543,8 +568,8 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
         // plain assignment: use compatible_assignment
         if (!compatible_assignment(left_type, right_type))
         {
-            fprintf(stderr, "Error: type mismatch in assignment - expected %s but got %s\n",
-                    ctype_string(left_type), ctype_string(right_type));
+            ERROR_AT("type mismatch in assignment - expected %s but got %s\n",
+                     ctype_string(left_type), ctype_string(right_type));
             parse_errors++;
             return false;
         }
@@ -688,7 +713,7 @@ static ASTNode *parse_if_statement(void)
 
     if (g_current.type != QTOKEN_LBRACE)
     {
-        fprintf(stderr, "Error: expected '{' for if body (blocks are required)\n");
+        ERROR_AT("expected '{' for if body (blocks are required)\n");
         parse_errors++;
         free_ast(condition);
         return NULL;
@@ -729,7 +754,7 @@ static ASTNode *parse_if_statement(void)
             }
             if (g_current.type != QTOKEN_LBRACE)
             {
-                fprintf(stderr, "Error: expected '{' for elif body (blocks are required)\n");
+                ERROR_AT("expected '{' for elif body (blocks are required)\n");
                 parse_errors++;
                 free_ast(elif_condition);
                 free_ast(head);
@@ -753,7 +778,7 @@ static ASTNode *parse_if_statement(void)
 
             if (g_current.type != QTOKEN_LBRACE)
             {
-                fprintf(stderr, "Error: expected '{' for else body (blocks are required)\n");
+                ERROR_AT("expected '{' for else body (blocks are required)\n");
                 parse_errors++;
                 free_ast(head);
                 return NULL;
@@ -793,7 +818,7 @@ static ASTNode *parse_while_statement(void)
 
     if (g_current.type != QTOKEN_LBRACE)
     {
-        fprintf(stderr, "Error: expected '{' for while body (blocks are required)\n");
+        ERROR_AT("expected '{' for while body (blocks are required)\n");
         parse_errors++;
         free_ast(condition);
         return NULL;
@@ -815,7 +840,7 @@ static ASTNode *parse_repeat_until_statement(void)
 
     if (g_current.type != QTOKEN_LBRACE)
     {
-        fprintf(stderr, "Error: expected '{' for repeat body (blocks are required)\n");
+        ERROR_AT("expected '{' for repeat body (blocks are required)\n");
         parse_errors++;
         return NULL;
     }
@@ -1081,8 +1106,8 @@ static ASTNode *parse_primary(void)
             VarType pt = expr_type(prompt);
             if (pt != TYPE_STRING)
             {
-                fprintf(stderr, "Error: input prompt must be a string, got %s\n",
-                        ctype_string(pt));
+                ERROR_AT("input prompt must be a string, got %s\n",
+                         ctype_string(pt));
                 parse_errors++;
                 free_ast(prompt);
                 return NULL;
@@ -1141,7 +1166,7 @@ static ASTNode *parse_primary(void)
         case TYPE_FLOAT:
             if (arg_type != TYPE_STRING && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
             {
-                fprintf(stderr, "Warning: to_int/to_float expects a string or number\n");
+                ERROR_AT("to_int/to_float expects a string or number\n");
             }
             break;
         case TYPE_STRING:
@@ -1150,13 +1175,13 @@ static ASTNode *parse_primary(void)
         case TYPE_CHAR:
             if (arg_type != TYPE_STRING && arg_type != TYPE_INT)
             {
-                fprintf(stderr, "Warning: to_char expects a string or integer\n");
+                ERROR_AT("to_char expects a string or integer\n");
             }
             break;
         case TYPE_BOOL:
             if (arg_type != TYPE_STRING && arg_type != TYPE_BOOL && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
             {
-                fprintf(stderr, "Warning: to_bool expects a string, bool, or number\n");
+                ERROR_AT("to_bool expects a string, bool, or number\n");
             }
             break;
         case TYPE_VOID:
@@ -1185,7 +1210,7 @@ static ASTNode *parse_primary(void)
         }
         return expr;
     }
-    fprintf(stderr, "Parse error: expected expression, but got %s\n", token_name(g_current.type));
+    ERROR_AT("expected expression, but got %s\n", token_name(g_current.type));
     parse_errors++;
     return NULL;
 }
@@ -1214,8 +1239,8 @@ static ASTNode *parse_assignment(char *name)
     VarType val_type = expr_type(value);
     if (!compatible_assignment(var_type, val_type))
     {
-        fprintf(stderr, "Error: type mismatch in assignment to '%s' - expected %s but got %s\n",
-                name, ctype_string(var_type), ctype_string(val_type));
+        ERROR_AT("type mismatch in assignment to '%s' - expected %s but got %s\n",
+                 name, ctype_string(var_type), ctype_string(val_type));
         parse_errors++;
         free(name);
         free_ast(value);
@@ -1236,7 +1261,7 @@ static ASTNode *parse_print_statement(void)
     // Check for empty argument list (maybe just a newline, we'll treat as error)
     if (g_current.type == QTOKEN_RPAREN)
     {
-        fprintf(stderr, "Print statement requires at least one argument\n");
+        ERROR_AT("print statement requires at least one argument\n");
         free_ast(print_node);
         return NULL;
     }
@@ -1324,7 +1349,7 @@ static void build_print_format(ASTNode *print_node)
     char *format = malloc(len + 1);
     if (!format)
     {
-        fprintf(stderr, "Memory error building print format\n");
+        ERROR_AT("memory error building print format\n");
         return;
     }
 
@@ -1475,7 +1500,7 @@ static ASTNode *parse_match_statement(void)
             }
             else
             {
-                fprintf(stderr, "Error: case value must be an integer, char, or boolean literal\n");
+                ERROR_AT("case value must be an integer, char, or boolean literal\n");
                 parse_errors++;
                 free_ast(match_node);
                 return NULL;
@@ -1518,7 +1543,7 @@ static ASTNode *parse_match_statement(void)
         }
         else
         {
-            fprintf(stderr, "Error: expected 'case' or 'default' in match body\n");
+            ERROR_AT("expected 'case' or 'default' in match body\n");
             parse_errors++;
             free_ast(match_node);
             return NULL;
@@ -1539,7 +1564,7 @@ static ASTNode *parse_single_let(void)
     // Expect variable name (no advance – 'let' was already consumed)
     if (g_current.type != QTOKEN_IDENTIFIER)
     {
-        fprintf(stderr, "Expected variable name after 'let'\n");
+        ERROR_AT("expected variable name after 'let'\n");
         return NULL;
     }
     char *name = strdup(g_current.str);
@@ -1562,7 +1587,7 @@ static ASTNode *parse_single_let(void)
     }
     else
     {
-        fprintf(stderr, "Expected type after ':' in let statement\n");
+        ERROR_AT("expected type after ':' in let statement\n");
         free(name);
         return NULL;
     }
@@ -1584,8 +1609,8 @@ static ASTNode *parse_single_let(void)
     VarType init_type = expr_type(init); // or infer_type – both exist; use the parser's own
     if (!compatible_assignment(type, init_type))
     {
-        fprintf(stderr, "Error: type mismatch in 'let %s' - expected %s but got %s\n",
-                name, ctype_string(type), ctype_string(init_type));
+        ERROR_AT("type mismatch in 'let %s' - expected %s but got %s\n",
+                 name, ctype_string(type), ctype_string(init_type));
         parse_errors++;
         free(name);
         free_ast(init);
@@ -1651,7 +1676,7 @@ static ASTNode *parse_let_declaration(void)
 {
     if (g_current.type != QTOKEN_IDENTIFIER)
     {
-        fprintf(stderr, "Expected variable name after 'let'\n");
+        ERROR_AT("expected variable name after 'let'\n");
         parse_errors++;
         return NULL;
     }
@@ -1674,7 +1699,7 @@ static ASTNode *parse_let_declaration(void)
     }
     else
     {
-        fprintf(stderr, "Expected type after ':' in let declaration\n");
+        ERROR_AT("expected type after ':' in let declaration\n");
         free(name);
         return NULL;
     }
@@ -1696,8 +1721,8 @@ static ASTNode *parse_let_declaration(void)
     VarType init_type = infer_type(init); // or expr_type(init)
     if (!compatible_assignment(type, init_type))
     {
-        fprintf(stderr, "Error: type mismatch in 'let %s' - expected %s but got %s\n",
-                name, ctype_string(type), ctype_string(init_type));
+        ERROR_AT("type mismatch in 'let %s' - expected %s but got %s\n",
+                 name, ctype_string(type), ctype_string(init_type));
         parse_errors++;
         free(name);
         free_ast(init);
@@ -1796,7 +1821,7 @@ static ASTNode *parse_for_statement(void)
     // --- body (block) ---
     if (g_current.type != QTOKEN_LBRACE)
     {
-        fprintf(stderr, "Error: expected '{' for for body (blocks are required)\n");
+        ERROR_AT("expected '{' for for body (blocks are required)\n");
         parse_errors++;
         if (init)
             free_ast(init);
@@ -1831,7 +1856,7 @@ static ASTNode *parse_func_def(void)
     // Function name
     if (g_current.type != QTOKEN_IDENTIFIER)
     {
-        fprintf(stderr, "Error: expected function name after 'func'\n");
+        ERROR_AT("expected function name after 'func'\n");
         parse_errors++;
         return NULL;
     }
@@ -1861,7 +1886,7 @@ static ASTNode *parse_func_def(void)
             // param name
             if (g_current.type != QTOKEN_IDENTIFIER)
             {
-                fprintf(stderr, "Error: expected parameter name\n");
+                ERROR_AT("expected parameter name\n");
                 parse_errors++;
                 break;
             }
@@ -1886,7 +1911,7 @@ static ASTNode *parse_func_def(void)
             }
             else
             {
-                fprintf(stderr, "Error: expected type for parameter '%s'\n", pname);
+                ERROR_AT("expected type for parameter '%s'\n", pname);
                 parse_errors++;
                 free(pname);
                 break;
@@ -1929,7 +1954,7 @@ static ASTNode *parse_func_def(void)
         }
         else
         {
-            fprintf(stderr, "Error: expected return type after '->'\n");
+            ERROR_AT("expected return type after '->'\n");
             parse_errors++;
             free_ast(func);
             free(param_types);
@@ -1945,7 +1970,7 @@ static ASTNode *parse_func_def(void)
     // Body must be a block
     if (g_current.type != QTOKEN_LBRACE)
     {
-        fprintf(stderr, "Error: expected '{' to start function body\n");
+        ERROR_AT("expected '{' to start function body\n");
         parse_errors++;
         free_ast(func);
         return NULL;
@@ -1980,7 +2005,7 @@ static ASTNode *parse_func_call(const char *name)
     // current token should be '('
     if (g_current.type != QTOKEN_LPAREN)
     {
-        fprintf(stderr, "Error: expected '(' in function call\n");
+        ERROR_AT("expected '(' in function call\n");
         parse_errors++;
         return NULL;
     }
@@ -2112,7 +2137,7 @@ static ASTNode *parse_statement(void)
             VarType expr_type_val = expr_type(binary);
             if (!compatible_assignment(var_type, expr_type_val))
             {
-                fprintf(stderr, "Error: type mismatch in compound assignment to '%s'\n", name);
+                ERROR_AT("type mismatch in compound assignment to '%s'\n", name);
                 parse_errors++;
                 free_ast(binary);
                 free(name);
@@ -2212,8 +2237,8 @@ static ASTNode *parse_statement(void)
             }
             return make_expr_statement(expr);
         }
-        fprintf(stderr, "Parser error: unexpected token %s at start of statement\n",
-                token_name(g_current.type));
+        ERROR_AT("unexpected token %s at start of statement\n",
+                 token_name(g_current.type));
         parse_errors++;
         return NULL;
     }

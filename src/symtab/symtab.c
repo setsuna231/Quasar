@@ -1,4 +1,5 @@
 #include "symtab.h"
+#include "error/error.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -62,7 +63,7 @@ void symtab_add(const char *name, VarType type)
     }
     else
     {
-        fprintf(stderr, "Error: too many variables in this scope\n");
+        error_report("too many variables in this scope\n");
     }
 }
 

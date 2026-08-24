@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include "parser/parser.h"
+#include "error/error.h"
 #include "codegen/codegen.h"
 #include <direct.h>
 #include <errno.h>
@@ -103,7 +104,7 @@ int main(int argc, char **argv)
             }
             else
             {
-                fprintf(stderr, "Error: -o requires an argument\n");
+                error_report("-o requires an argument\n");
                 return 1;
             }
         }
@@ -117,7 +118,7 @@ int main(int argc, char **argv)
         {
             if (source_file)
             {
-                fprintf(stderr, "Error: multiple source files specified\n");
+                error_report("multiple source files specified\n");
                 return 1;
             }
             source_file = argv[i];
@@ -126,7 +127,7 @@ int main(int argc, char **argv)
 
     if (!source_file)
     {
-        fprintf(stderr, "Error: no source file specified\n");
+        error_report("no source file specified\n");
         print_usage(argv[0]);
         return 1;
     }
@@ -170,7 +171,7 @@ int main(int argc, char **argv)
     FILE *in = fopen(source_file, "rb");
     if (!in)
     {
-        fprintf(stderr, "Error: cannot open '%s'\n", source_file);
+        error_report("cannot open '%s'\n", source_file);
         return 1;
     }
     fseek(in, 0, SEEK_END);

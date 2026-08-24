@@ -1,17 +1,17 @@
-# Ignore personal examples
-examples/
+# Personal experiments
+playground/
 
-# Ignore generated build outputs
+# Build outputs
 build/
 executables/
-
-# Ignore object files and executables
 *.o
 *.exe
 *.qsc
 *.qsr
 *.txt
 
-# Do NOT ignore .qs in tests/
+# Do NOT ignore .qs in tests/ and examples/
 !tests/
 !tests/*.qs
+!examples/
+!examples/*.qs

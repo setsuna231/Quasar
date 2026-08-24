@@ -83,6 +83,8 @@ typedef struct
     int value;
     double floatValue;
     char *str;
+    int line;
+    int col;
 } Token;
 
 Token get_next_token(const char *source, int *pos);

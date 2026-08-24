@@ -1,5 +1,6 @@
 #include "codegen/codegen.h"
 #include "symtab/symtab.h"
+#include "error/error.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -167,7 +168,7 @@ void generate_code(ASTNode *program, FILE *out)
 {
     if (program->type != AST_PROGRAM)
     {
-        fprintf(stderr, "Error: root node must be AST_PROGRAM\n");
+        error_report("root node must be AST_PROGRAM\n");
         exit(1);
     }
 
