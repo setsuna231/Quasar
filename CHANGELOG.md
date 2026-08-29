@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet.
 
+## [v0.20.1] - 2026-08-29
+### Added
+- Semantic checks: return type mismatch and function argument count.
+- Unused function parameter warnings.
+### Fixed
+- Duplicate function body emission in codegen.
+
 ## [v0.20.0] - 2026-08-19
 ### Added
 - User-defined functions (`func` keyword, parameters, return types, recursion).

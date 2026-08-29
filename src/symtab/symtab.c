@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #define MAX_VARS 256
 #define MAX_SCOPES 64
@@ -160,4 +161,17 @@ const char *ctype_spec_string(VarType type)
     default:
         return "%d";
     }
+}
+
+bool symtab_has(const char *name)
+{
+    for (int s = scope_top; s >= 0; s--)
+    {
+        for (int i = 0; i < scopes[s].count; i++)
+        {
+            if (strcmp(scopes[s].symbols[i].name, name) == 0)
+                return true;
+        }
+    }
+    return false;
 }

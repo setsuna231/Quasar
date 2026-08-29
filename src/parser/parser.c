@@ -11,6 +11,8 @@
 static const char *g_source;
 static int g_pos;
 static Token g_current;
+static VarType g_current_func_return_type = TYPE_VOID;
+static bool g_inside_function = false;
 
 #define ERROR_AT(...) parser_error_report(g_current.line, g_current.col, __VA_ARGS__)
 #define WARNING_AT(...) parser_warning_report(g_current.line, g_current.col, __VA_ARGS__)
@@ -40,6 +42,9 @@ static ASTNode *parse_func_call(const char *name);
 
 static VarType expr_type(ASTNode *node);
 static void build_print_format(ASTNode *print_node);
+static bool variable_in_expr(ASTNode *node, const char *name);
+static bool variable_in_stmt(ASTNode *stmt, const char *name);
+int parser_error_count(void);
 static int parse_errors = 0;
 
 static VarType infer_type(ASTNode *node)
@@ -462,6 +467,59 @@ static bool is_expression_start(QTokenType type)
            type == QTOKEN_INPUT;
 }
 
+static bool variable_in_stmt(ASTNode *stmt, const char *name)
+{
+    if (!stmt)
+        return false;
+
+    switch (stmt->type)
+    {
+    case AST_BLOCK:
+        for (int i = 0; i < stmt->data.block.count; i++)
+            if (variable_in_stmt(stmt->data.block.statements[i], name))
+                return true;
+        return false;
+    case AST_EXPR_STATEMENT:
+        return variable_in_expr(stmt->data.expr, name);
+    case AST_IF:
+        return variable_in_expr(stmt->data.ifelse.condition, name) ||
+               variable_in_stmt(stmt->data.ifelse.body, name) ||
+               variable_in_stmt(stmt->data.ifelse.next, name);
+    case AST_WHILE:
+        return variable_in_expr(stmt->data.whileloop.condition, name) ||
+               variable_in_stmt(stmt->data.whileloop.body, name);
+    case AST_FOR:
+        return variable_in_stmt(stmt->data.forloop.body, name);
+    case AST_RETURN:
+        return variable_in_expr(stmt->data.return_expr, name);
+    default:
+        return false;
+    }
+}
+
+static bool variable_in_expr(ASTNode *node, const char *name)
+{
+    if (!node)
+        return false;
+    switch (node->type)
+    {
+    case AST_VARIABLE:
+        return strcmp(node->data.varName, name) == 0;
+    case AST_BINARY:
+        return variable_in_expr(node->data.binary.left, name) ||
+               variable_in_expr(node->data.binary.right, name);
+    case AST_UNARY:
+        return variable_in_expr(node->data.unary.operand, name);
+    case AST_FUNC_CALL:
+        for (int i = 0; i < node->data.func_call.arg_count; i++)
+            if (variable_in_expr(node->data.func_call.args[i], name))
+                return true;
+        return false;
+    default:
+        return false;
+    }
+}
+
 // --- Lexer interface ---
 static void advance(void)
 {
@@ -632,9 +690,15 @@ static ASTNode *parse_continue_statement(void)
 
 static ASTNode *parse_return_statement(void)
 {
+    if (!g_inside_function)
+    {
+        ERROR_AT("return statement outside of a function\n");
+        parse_errors++;
+        return NULL;
+    }
+
     advance(); // consume 'return'
 
-    // Optional expression
     ASTNode *expr = NULL;
     if (g_current.type != QTOKEN_SEMICOLON)
     {
@@ -646,6 +710,21 @@ static ASTNode *parse_return_statement(void)
     if (!expect(QTOKEN_SEMICOLON, "expected ';' after return"))
     {
         free_ast(expr);
+        return NULL;
+    }
+
+    if (expr && g_current_func_return_type == TYPE_VOID)
+    {
+        ERROR_AT("cannot return a value from a void function\n");
+        parse_errors++;
+        free_ast(expr);
+        return NULL;
+    }
+
+    if (!expr && g_current_func_return_type != TYPE_VOID)
+    {
+        ERROR_AT("expected return value in non-void function\n");
+        parse_errors++;
         return NULL;
     }
 
@@ -691,6 +770,16 @@ static ASTNode *parse_postfix(void)
             break;
         }
     }
+
+    /* Undefined variable check (only for actual variable references) */
+    if (node->type == AST_VARIABLE && !symtab_has(node->data.varName))
+    {
+        ERROR_AT("undefined variable '%s'\n", node->data.varName);
+        parse_errors++;
+        free_ast(node);
+        return NULL;
+    }
+
     return node;
 }
 
@@ -1015,9 +1104,15 @@ static ASTNode *parse_block(void)
 {
     if (!expect(QTOKEN_LBRACE, "expected '{' to start block"))
         return NULL;
-    symtab_push_scope(); // NEW
+    symtab_push_scope();
 
     ASTNode *block = make_block();
+    if (!block)
+    {
+        symtab_pop_scope();
+        return NULL;
+    }
+
     while (g_current.type != QTOKEN_RBRACE && g_current.type != QTOKEN_EOF)
     {
         ASTNode *stmt = parse_statement();
@@ -1028,11 +1123,11 @@ static ASTNode *parse_block(void)
                 advance();
             if (g_current.type == QTOKEN_RBRACE)
                 advance();
-            symtab_pop_scope(); // cleanup
+            symtab_pop_scope();
             free_ast(block);
             return NULL;
         }
-        block_add_statement(block, stmt);
+        block_add_statement(block, stmt); // exactly once
     }
 
     if (!expect(QTOKEN_RBRACE, "expected '}' to close block"))
@@ -1042,13 +1137,8 @@ static ASTNode *parse_block(void)
         return NULL;
     }
 
-    // symtab_pop_scope(); // NEW – block ends
+    symtab_pop_scope(); // block scope done
     return block;
-}
-
-int parser_error_count(void)
-{
-    return parse_errors;
 }
 
 static ASTNode *parse_primary(void)
@@ -1166,7 +1256,7 @@ static ASTNode *parse_primary(void)
         case TYPE_FLOAT:
             if (arg_type != TYPE_STRING && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
             {
-                ERROR_AT("to_int/to_float expects a string or number\n");
+                WARNING_AT("to_int/to_float expects a string or number\n");
             }
             break;
         case TYPE_STRING:
@@ -1175,13 +1265,13 @@ static ASTNode *parse_primary(void)
         case TYPE_CHAR:
             if (arg_type != TYPE_STRING && arg_type != TYPE_INT)
             {
-                ERROR_AT("to_char expects a string or integer\n");
+                WARNING_AT("to_char expects a string or integer\n");
             }
             break;
         case TYPE_BOOL:
             if (arg_type != TYPE_STRING && arg_type != TYPE_BOOL && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
             {
-                ERROR_AT("to_bool expects a string, bool, or number\n");
+                WARNING_AT("to_bool expects a string, bool, or number\n");
             }
             break;
         case TYPE_VOID:
@@ -1258,12 +1348,17 @@ static ASTNode *parse_print_statement(void)
 
     ASTNode *print_node = make_print_empty();
 
-    // Check for empty argument list (maybe just a newline, we'll treat as error)
+    // Empty print() -> just a newline
     if (g_current.type == QTOKEN_RPAREN)
     {
-        ERROR_AT("print statement requires at least one argument\n");
-        free_ast(print_node);
-        return NULL;
+        advance(); // consume ')'
+        if (!expect(QTOKEN_SEMICOLON, "expected ';' after print statement"))
+        {
+            free_ast(print_node);
+            return NULL;
+        }
+        build_print_format(print_node);
+        return print_node;
     }
 
     // Parse first expression
@@ -1299,6 +1394,7 @@ static ASTNode *parse_print_statement(void)
         free_ast(print_node);
         return NULL;
     }
+
     build_print_format(print_node);
     return print_node;
 }
@@ -1985,7 +2081,12 @@ static ASTNode *parse_func_def(void)
     }
 
     // Parse body (parse_block pushes its own inner scope)
+    g_current_func_return_type = ret_type;
+    g_inside_function = true;
     ASTNode *body = parse_block();
+    g_inside_function = false;
+    g_current_func_return_type = TYPE_VOID;
+
     if (!body)
     {
         symtab_pop_scope();
@@ -1997,6 +2098,15 @@ static ASTNode *parse_func_def(void)
     symtab_pop_scope();
 
     func->data.func_def.body = body;
+
+    for (int i = 0; i < func->data.func_def.param_count; i++)
+    {
+        if (!variable_in_stmt(body, func->data.func_def.params[i].name))
+        {
+            WARNING_AT("parameter '%s' is unused\n", func->data.func_def.params[i].name);
+        }
+    }
+
     return func;
 }
 
@@ -2036,6 +2146,17 @@ static ASTNode *parse_func_call(const char *name)
         free_ast(call);
         return NULL;
     }
+
+    FuncInfo *fi = symtab_lookup_func(name);
+    if (fi && fi->param_count != call->data.func_call.arg_count)
+    {
+        ERROR_AT("function '%s' expects %d arguments, but got %d\n",
+                 name, fi->param_count, call->data.func_call.arg_count);
+        parse_errors++;
+        free_ast(call);
+        return NULL;
+    }
+
     return call;
 }
 
@@ -2373,6 +2494,11 @@ static ASTNode *parse_expression(void)
     return parse_assignment_expression(); // lowest precedence
 }
 
+int parser_error_count(void)
+{
+    return parse_errors;
+}
+
 ASTNode *parse_program(const char *source)
 {
     g_source = source;
@@ -2399,7 +2525,8 @@ ASTNode *parse_program(const char *source)
                    g_current.type != QTOKEN_EOF &&
                    g_current.type != QTOKEN_PRINT &&
                    g_current.type != QTOKEN_LET &&
-                   g_current.type != QTOKEN_IDENTIFIER) // identifiers can begin assignment statements
+                   g_current.type != QTOKEN_IDENTIFIER && // identifiers can begin assignment statements
+                   g_current.type != QTOKEN_FUNC)         // functions can begin a new top-level statement
             {
                 advance();
             }

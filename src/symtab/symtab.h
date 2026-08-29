@@ -1,5 +1,6 @@
 #ifndef SYMTAB_H
 #define SYMTAB_H
+#include <stdbool.h>
 
 typedef enum
 {
@@ -27,5 +28,6 @@ void symtab_add(const char *name, VarType type);
 VarType symtab_lookup(const char *name);
 const char *ctype_string(VarType type);
 const char *ctype_spec_string(VarType type);
+bool symtab_has(const char *name);
 
 #endif

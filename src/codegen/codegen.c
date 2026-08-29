@@ -229,6 +229,7 @@ void generate_code(ASTNode *program, FILE *out)
     fprintf(out, "\treturn 0;\n");
     fprintf(out, "}\n");
 }
+
 static void emit_function_definition(ASTNode *node, FILE *out)
 {
     if (node->type != AST_FUNC_DEF)
@@ -245,7 +246,15 @@ static void emit_function_definition(ASTNode *node, FILE *out)
                 node->data.func_def.params[i].name);
     }
     fprintf(out, ") {\n");
-    emit_statement(node->data.func_def.body, out, 1); // body is AST_BLOCK
+
+    /* Mark parameters as used to suppress C -Wunused-parameter warnings */
+    for (int i = 0; i < node->data.func_def.param_count; i++)
+    {
+        fprintf(out, "  (void)%s;\n", node->data.func_def.params[i].name);
+    }
+
+    emit_statement(node->data.func_def.body, out, 1);
+
     fprintf(out, "}\n");
 }
 
