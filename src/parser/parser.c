@@ -13,6 +13,7 @@ static int g_pos;
 static Token g_current;
 static VarType g_current_func_return_type = TYPE_VOID;
 static bool g_inside_function = false;
+static int g_loop_depth = 0;
 
 #define ERROR_AT(...) parser_error_report(g_current.line, g_current.col, __VA_ARGS__)
 #define WARNING_AT(...) parser_warning_report(g_current.line, g_current.col, __VA_ARGS__)
@@ -677,6 +678,14 @@ static ASTNode *parse_break_statement(void)
     advance(); // consume 'break'
     if (!expect(QTOKEN_SEMICOLON, "expected ';' after 'break'"))
         return NULL;
+
+    if (g_loop_depth == 0)
+    {
+        ERROR_AT("'break' outside of a loop\n");
+        parse_errors++;
+        return NULL;
+    }
+
     return make_break();
 }
 
@@ -685,6 +694,14 @@ static ASTNode *parse_continue_statement(void)
     advance(); // consume 'continue'
     if (!expect(QTOKEN_SEMICOLON, "expected ';' after 'continue'"))
         return NULL;
+
+    if (g_loop_depth == 0)
+    {
+        ERROR_AT("'continue' outside of a loop\n");
+        parse_errors++;
+        return NULL;
+    }
+
     return make_continue();
 }
 
@@ -726,6 +743,19 @@ static ASTNode *parse_return_statement(void)
         ERROR_AT("expected return value in non-void function\n");
         parse_errors++;
         return NULL;
+    }
+
+    if (expr && g_current_func_return_type != TYPE_VOID)
+    {
+        VarType expr_t = expr_type(expr);
+        if (!compatible_assignment(g_current_func_return_type, expr_t))
+        {
+            ERROR_AT("return type mismatch: expected %s but got %s\n",
+                     ctype_string(g_current_func_return_type), ctype_string(expr_t));
+            parse_errors++;
+            free_ast(expr);
+            return NULL;
+        }
     }
 
     return make_return(expr);
@@ -913,7 +943,10 @@ static ASTNode *parse_while_statement(void)
         return NULL;
     }
 
+    g_loop_depth++;
     ASTNode *body = parse_block();
+    g_loop_depth--;
+
     if (!body)
     {
         free_ast(condition);
@@ -934,7 +967,10 @@ static ASTNode *parse_repeat_until_statement(void)
         return NULL;
     }
 
+    g_loop_depth++;
     ASTNode *body = parse_block();
+    g_loop_depth--;
+
     if (!body)
         return NULL;
 
@@ -1928,7 +1964,11 @@ static ASTNode *parse_for_statement(void)
         symtab_pop_scope();
         return NULL;
     }
+
+    g_loop_depth++;
     ASTNode *body = parse_block();
+    g_loop_depth--;
+
     if (!body)
     {
         if (init)
