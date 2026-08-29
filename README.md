@@ -8,7 +8,7 @@ Quasar combines the clarity of high-level syntax with the performance of native 
 
 ## Current Status
 
-Quasar v1.0.0 is a **stable language core**. All fundamental features are implemented and pass a comprehensive regression suite under `-Wall -Wextra -Werror`. The compiler is ready for experimentation, learning, and building real programs.
+Quasar v0.20.2 is a **stable language core**. All fundamental features are implemented and pass a comprehensive regression suite under `-Wall -Wextra -Werror`. The compiler is ready for experimentation, learning, and building real programs.
 
 ---
 
