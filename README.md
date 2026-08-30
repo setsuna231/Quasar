@@ -8,7 +8,7 @@ Quasar combines the clarity of high-level syntax with the performance of native 
 
 ## Current Status
 
-Quasar v0.20.2 is a **stable language core**. All fundamental features are implemented and pass a comprehensive regression suite under `-Wall -Wextra -Werror`. The compiler is ready for experimentation, learning, and building real programs.
+Quasar v1.0.0 is a **stable language core**. All fundamental features are implemented and pass a comprehensive regression suite under `-Wall -Wextra -Werror`. The compiler is ready for experimentation, learning, and building real programs.
 
 ---
 
@@ -27,7 +27,7 @@ Quasar v0.20.2 is a **stable language core**. All fundamental features are imple
   - Return types, including `void`
   - Recursion support
 - **Input/output**:
-  - `print()` with multiple arguments
+  - `print()` with multiple arguments (empty `print()` prints a newline)
   - `input()` for user input
 - **String operations**:
   - Concatenation using `+`
@@ -46,6 +46,20 @@ Quasar v0.20.2 is a **stable language core**. All fundamental features are imple
   - `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `//=`
   - `++`, `--` (prefix and postfix)
 
+### Safety & Diagnostics
+
+- Line and column numbers in all error and warning messages
+- Undefined variable detection
+- Return type checking:
+  - `return` outside a function
+  - Value returned from a `void` function
+  - Missing return value in non-`void` function
+  - Type mismatch in returned value
+- Function argument count validation
+- Unused function parameter warnings
+- `break` / `continue` outside loop detection
+- Duplicate function definition error
+
 ---
 
 ## Getting Started
@@ -60,40 +74,32 @@ Quasar v0.20.2 is a **stable language core**. All fundamental features are imple
 Clone the repository and build `quasar`:
 
 ```powershell
-gcc -O2 -Wall -Wextra -std=c99 -Isrc src/lexer/lexer.c src/parser/ast.c src/parser/parser.c src/codegen/codegen.c src/symtab/symtab.c src/main.c -o quasar.exe
+gcc -O2 -Wall -Wextra -std=c99 -Isrc src/lexer/lexer.c src/parser/ast.c src/parser/parser.c src/codegen/codegen.c src/symtab/symtab.c src/error/error.c src/main.c -o quasar.exe
 ```
 
-### Compiling and Running a Quasar Program
+## Compiling and Running a Quasar Program
 
-Create a file named `hello.qs`:
-
-```qs
+### Create a file named hello.qs:
+``` qs
 func main() -> void {
     print("Hello, Quasar!");
 }
 ```
-
-Compile it:
-
-```powershell
+### Compile it:
+``` powershell
 quasar hello.qs -o hello.exe
 ```
-
-Run it:
-
-```powershell
+### Run it:
+``` powershell
 .\hello.exe
 ```
 
-Output:
-
-```
+### Output:
+```text
 Hello, Quasar!
 ```
 
-> **Note:** `main` is optional. If omitted, the compiler treats top-level statements as the entry point.
-
----
+    Note: main is optional. If omitted, the compiler treats top-level statements as the entry point.
 
 ## Language at a Glance
 
@@ -162,20 +168,13 @@ let pi_int : int = to_int(pi);       // 3
 let pi_str : string = to_string(pi); // "3.14159"
 ```
 
----
 
 ## Documentation
 
-Full language reference and tutorials will be available in the `docs/` directory. For now, the source code and included test suite serve as the primary reference.
-
----
-
+Full language reference and tutorials will be available in the docs/ directory. For now, the source code and included test suite serve as the primary reference.
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
-
----
-
+This project is licensed under the MIT License. See the LICENSE file for details.
 ## Acknowledgments
 
 Inspired by a love of systems programming and a dislike of outdated academic C.

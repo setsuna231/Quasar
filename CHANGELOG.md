@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet.
 
+## [v1.0.0] - 2026-08-30
+### Added
+- First stable release of the Quasar language core.
+- Complete semantic checking, warnings, and line/col error reporting.
+- Security policy and comprehensive test suite.
+
 ## [v0.20.3] - 2026-08-30
 ### Added
 - `break` / `continue` outside loops now produce a compile‑time error.
