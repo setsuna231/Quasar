@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet.
 
+## [v0.20.3] - 2026-08-30
+### Added
+- `break` / `continue` outside loops now produce a compile‑time error.
+- Return value type mismatch checking (e.g., returning a string from an `int` function).
+### Changed
+- Function redefinition is now a compile‑time error instead of a warning.
+
+## [v0.20.2] - 2026-08-29
+### Added
+- Semantic checks for loop‑context (`break`/`continue`) and return type compatibility.
+
 ## [v0.20.1] - 2026-08-29
 ### Added
 - Semantic checks: return type mismatch and function argument count.

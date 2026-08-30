@@ -2099,6 +2099,27 @@ static ASTNode *parse_func_def(void)
     }
     func->data.func_def.return_type = ret_type;
 
+    // Check for function redefinition
+    if (symtab_lookup_func(func->data.func_def.name))
+    {
+        ERROR_AT("function '%s' redefined\n", func->data.func_def.name);
+        parse_errors++;
+
+        // Skip the function body to keep parser in sync
+        if (g_current.type == QTOKEN_LBRACE)
+        {
+            ASTNode *dummy_body = parse_block();
+            if (dummy_body)
+            {
+                free_ast(dummy_body);
+            }
+        }
+
+        free_ast(func);
+        free(param_types);
+        return NULL;
+    }
+
     // Register function BEFORE parsing body (so recursion works)
     symtab_add_func(func->data.func_def.name, ret_type, param_types, param_count);
     free(param_types);
@@ -2566,11 +2587,16 @@ ASTNode *parse_program(const char *source)
                    g_current.type != QTOKEN_PRINT &&
                    g_current.type != QTOKEN_LET &&
                    g_current.type != QTOKEN_IDENTIFIER && // identifiers can begin assignment statements
-                   g_current.type != QTOKEN_FUNC)         // functions can begin a new top-level statement
+                   g_current.type != QTOKEN_FUNC &&       // functions can begin a new top-level statement
+                   g_current.type != QTOKEN_RBRACE)       // stop at closing brace
             {
                 advance();
             }
             if (g_current.type == QTOKEN_SEMICOLON)
+            {
+                advance();
+            }
+            else if (g_current.type == QTOKEN_RBRACE) // consume stray closing brace
             {
                 advance();
             }
