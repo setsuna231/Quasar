@@ -4,10 +4,12 @@
 typedef enum
 {
     QTOKEN_PRINT,
-    QTOKEN_LPAREN,
-    QTOKEN_RPAREN,
-    QTOKEN_LBRACE,
-    QTOKEN_RBRACE,
+    QTOKEN_LPAREN,   // )
+    QTOKEN_RPAREN,   // (
+    QTOKEN_LBRACE,   // }
+    QTOKEN_RBRACE,   // {
+    QTOKEN_LBRACKET, // [
+    QTOKEN_RBRACKET, // ]
     QTOKEN_INTEGER,
     QTOKEN_FLOAT,
     QTOKEN_STRING,

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet.
 
+## [v1.1.0] - 2026-09-18
+### Added
+- Fixed-size arrays: `let arr : int[10];`
+- Array initializer lists: `let arr : int[3] = {1, 2, 3};`
+- Array indexing for reads and writes: `arr[i]`, `arr[i] = x`
+- Index type checking (must be `int`)
+- Array bounds on initializer count
+### Changed
+- Type system refactored from `VarType` enum to `Type*` descriptor tree (primitive / array)
+- `symtab_lookup` replaced by `symtab_lookup_type` returning `Type*`
+- Codegen now uses `type_to_c_string` and `type_to_string` instead of `ctype_string`
+
 ## [v1.0.0] - 2026-08-30
 ### Added
 - First stable release of the Quasar language core.

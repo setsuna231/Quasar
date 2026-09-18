@@ -124,7 +124,7 @@ void program_add_statement(ASTNode *program, ASTNode *stmt)
 }
 
 // for let and variable
-ASTNode *make_let(const char *name, VarType type, ASTNode *init)
+ASTNode *make_let(const char *name, Type *type, ASTNode *init)
 {
     ASTNode *node = malloc(sizeof(ASTNode));
     if (!node)
@@ -168,7 +168,7 @@ void multilet_add(ASTNode *multilet, ASTNode *decl)
     multilet->data.multilet.declarations[multilet->data.multilet.count++] = decl;
 }
 
-ASTNode *make_variable(const char *name, VarType type)
+ASTNode *make_variable(const char *name, Type *type)
 {
     ASTNode *node = malloc(sizeof(ASTNode));
     if (!node)
@@ -178,7 +178,6 @@ ASTNode *make_variable(const char *name, VarType type)
     node->varType = type;
     return node;
 }
-
 // for reassignment of var
 ASTNode *make_assign(const char *name, ASTNode *value)
 {
@@ -373,7 +372,7 @@ ASTNode *make_input(ASTNode *prompt)
 }
 
 // for type conversions
-ASTNode *make_type_conv(VarType target, ASTNode *source)
+ASTNode *make_type_conv(Type *target, ASTNode *source)
 {
     ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
     if (!node)
@@ -406,7 +405,7 @@ ASTNode *make_fallthrough(void)
 }
 
 // for functions
-ASTNode *make_func_def(const char *name, VarType return_type, ASTNode *body)
+ASTNode *make_func_def(const char *name, Type *return_type, ASTNode *body)
 {
     ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
     if (!node)
@@ -428,7 +427,7 @@ ASTNode *make_func_def(const char *name, VarType return_type, ASTNode *body)
     return node;
 }
 
-void func_def_add_param(ASTNode *func_def, const char *param_name, VarType param_type)
+void func_def_add_param(ASTNode *func_def, const char *param_name, Type *param_type)
 {
     if (!func_def || func_def->type != AST_FUNC_DEF)
         return;
@@ -480,6 +479,49 @@ void func_call_add_arg(ASTNode *func_call, ASTNode *arg)
             return;
     }
     func_call->data.func_call.args[func_call->data.func_call.arg_count++] = arg;
+}
+
+// for arrays : making and accessing
+ASTNode *make_array_literal(void)
+{
+    ASTNode *node = malloc(sizeof(ASTNode));
+    if (!node)
+        return NULL;
+    node->type = AST_ARRAY_LITERAL;
+    node->data.array_literal.capacity = 4;
+    node->data.array_literal.count = 0;
+    node->data.array_literal.elements = malloc(sizeof(ASTNode *) * node->data.array_literal.capacity);
+    if (!node->data.array_literal.elements)
+    {
+        free(node);
+        return NULL;
+    }
+    return node;
+}
+
+void array_literal_add(ASTNode *literal, ASTNode *element)
+{
+    if (literal->data.array_literal.count >= literal->data.array_literal.capacity)
+    {
+        literal->data.array_literal.capacity *= 2;
+        literal->data.array_literal.elements = realloc(literal->data.array_literal.elements,
+                                                       sizeof(ASTNode *) * literal->data.array_literal.capacity);
+        if (!literal->data.array_literal.elements)
+            return;
+    }
+    literal->data.array_literal.elements[literal->data.array_literal.count++] = element;
+}
+
+ASTNode *make_array_access(ASTNode *array, ASTNode *index, Type *element_type)
+{
+    ASTNode *node = malloc(sizeof(ASTNode));
+    if (!node)
+        return NULL;
+    node->type = AST_ARRAY_ACCESS;
+    node->data.array_access.array = array;
+    node->data.array_access.index = index;
+    node->data.array_access.element_type = element_type;
+    return node;
 }
 
 void free_ast(ASTNode *node)
@@ -599,6 +641,17 @@ void free_ast(ASTNode *node)
         for (int i = 0; i < node->data.func_call.arg_count; i++)
             free_ast(node->data.func_call.args[i]);
         free(node->data.func_call.args);
+        break;
+
+    case AST_ARRAY_LITERAL:
+        for (int i = 0; i < node->data.array_literal.count; i++)
+            free_ast(node->data.array_literal.elements[i]);
+        free(node->data.array_literal.elements);
+        break;
+
+    case AST_ARRAY_ACCESS:
+        free_ast(node->data.array_access.array);
+        free_ast(node->data.array_access.index);
         break;
     default:
         break;

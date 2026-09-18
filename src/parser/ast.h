@@ -32,6 +32,8 @@ typedef enum
     AST_FALLTHROUGH,
     AST_FUNC_DEF,
     AST_FUNC_CALL,
+    AST_ARRAY_LITERAL,
+    AST_ARRAY_ACCESS,
 } ASTNodeType;
 
 typedef enum
@@ -81,7 +83,7 @@ typedef struct
 typedef struct ASTNode
 {
     ASTNodeType type;
-    VarType varType;
+    Type *varType; // type of variable, filled at parse time
     union
     {
         int intValue;
@@ -100,7 +102,7 @@ typedef struct ASTNode
         struct
         {
             char *name;
-            VarType vartype;
+            Type *vartype;
             struct ASTNode *init; // initializer expression
         } let;                    // for AST_LET
 
@@ -186,8 +188,8 @@ typedef struct ASTNode
 
         struct
         {
-            VarType target;         // the type we want
-            struct ASTNode *source; // the source expression
+            Type *target;           // type we want
+            struct ASTNode *source; // source type
         } typeconv;
 
         struct ASTNode *return_expr; // optional expression (NULL for bare return)
@@ -196,15 +198,15 @@ typedef struct ASTNode
         struct
         {
             char *name;
+            Type *return_type;
             struct
             {
                 char *name;
-                VarType type;
+                Type *type;
             } *params;
             int param_count;
             int param_capacity;
-            VarType return_type;  // return type (TYPE_VOID if none)
-            struct ASTNode *body; // block body (AST_BLOCK)
+            struct ASTNode *body;
         } func_def;
 
         // Function call
@@ -216,6 +218,22 @@ typedef struct ASTNode
             int arg_capacity;
         } func_call;
 
+        // Array literal (initializer list)
+        struct
+        {
+            struct ASTNode **elements;
+            int count;
+            int capacity;
+        } array_literal;
+
+        // Array access (e.g., arr[i])
+        struct
+        {
+            struct ASTNode *array;
+            struct ASTNode *index;
+            Type *element_type;
+        } array_access;
+
     } data;
 } ASTNode;
 
@@ -226,8 +244,8 @@ ASTNode *make_program(void);
 ASTNode *make_float(double value);
 ASTNode *make_char(char value);
 ASTNode *make_bool(int value);
-ASTNode *make_let(const char *name, VarType type, ASTNode *init);
-ASTNode *make_variable(const char *name, VarType type);
+ASTNode *make_let(const char *name, Type *type, ASTNode *init);
+ASTNode *make_variable(const char *name, Type *type);
 ASTNode *make_assign(const char *name, ASTNode *value);
 ASTNode *make_binary(BinaryOp op, ASTNode *left, ASTNode *right);
 ASTNode *make_block(void);
@@ -242,13 +260,16 @@ ASTNode *make_continue(void);
 ASTNode *make_match(ASTNode *discriminant);
 ASTNode *make_multilet(void);
 ASTNode *make_input(ASTNode *prompt);
-ASTNode *make_type_conv(VarType target, ASTNode *source);
+ASTNode *make_type_conv(Type *target, ASTNode *source);
 ASTNode *make_return(ASTNode *expr);
 ASTNode *make_fallthrough(void);
-ASTNode *make_func_def(const char *name, VarType return_type, ASTNode *body);
+ASTNode *make_func_def(const char *name, Type *return_type, ASTNode *body);
 ASTNode *make_func_call(const char *name);
+ASTNode *make_array_literal(void);
+void array_literal_add(ASTNode *literal, ASTNode *element);
+ASTNode *make_array_access(ASTNode *array, ASTNode *index, Type *element_type);
 
-void func_def_add_param(ASTNode *func_def, const char *param_name, VarType param_type);
+void func_def_add_param(ASTNode *func_def, const char *param_name, Type *param_type);
 void func_call_add_arg(ASTNode *func_call, ASTNode *arg);
 void multilet_add(ASTNode *multilet, ASTNode *decl);
 void match_add_case(ASTNode *match, ASTNode *value, ASTNode *body);

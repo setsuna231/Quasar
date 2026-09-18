@@ -10,94 +10,97 @@ static void emit_expression(ASTNode *node, FILE *out);
 static void emit_runtime_helpers(FILE *out);
 static void emit_function_definition(ASTNode *node, FILE *out);
 
-// Returns the Quasar variable type of an expression node.
-static VarType infer_type(ASTNode *node)
+// Returns the Quasar variable type of an expression node.2
+static Type *infer_type(ASTNode *node)
 {
     if (!node)
-        return TYPE_INT; // safe default
+        return type_primitive(TYPE_INT);
+
     switch (node->type)
     {
     case AST_INTEGER:
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     case AST_FLOAT:
-        return TYPE_FLOAT;
+        return type_primitive(TYPE_FLOAT);
     case AST_STRING:
-        return TYPE_STRING;
+        return type_primitive(TYPE_STRING);
     case AST_CHAR:
-        return TYPE_CHAR;
+        return type_primitive(TYPE_CHAR);
     case AST_BOOL:
-        return TYPE_BOOL;
+        return type_primitive(TYPE_BOOL);
+    case AST_VARIABLE:
+        return node->varType ? node->varType : type_primitive(TYPE_INT);
+
+    case AST_BINARY:
+    {
+        Type *left = infer_type(node->data.binary.left);
+        Type *right = infer_type(node->data.binary.right);
+        BinaryOp op = node->data.binary.op;
+
+        if (op == OP_POW)
+            return type_primitive(TYPE_FLOAT);
+        if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT ||
+            op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
+            return type_primitive(TYPE_BOOL);
+
+        if (op == OP_ADD && type_is_primitive(left, TYPE_STRING) &&
+            type_is_primitive(right, TYPE_STRING))
+            return type_primitive(TYPE_STRING);
+
+        if (op == OP_MUL)
+        {
+            if ((type_is_primitive(left, TYPE_STRING) && type_is_primitive(right, TYPE_INT)) ||
+                (type_is_primitive(left, TYPE_INT) && type_is_primitive(right, TYPE_STRING)))
+                return type_primitive(TYPE_STRING);
+        }
+
+        if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
+            op == OP_MOD || op == OP_FLDIV)
+        {
+            if (type_is_primitive(left, TYPE_FLOAT) || type_is_primitive(right, TYPE_FLOAT))
+                return type_primitive(TYPE_FLOAT);
+            return type_primitive(TYPE_INT);
+        }
+
+        if (op == OP_ASSIGN)
+            return left;
+        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN ||
+            op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN || op == OP_POW_ASSIGN ||
+            op == OP_FLDIV_ASSIGN)
+            return left;
+
+        return type_primitive(TYPE_INT);
+    }
+
+    case AST_UNARY:
+        if (node->data.unary.op == UNARY_NOT)
+            return type_primitive(TYPE_BOOL);
+        if (node->data.unary.op == UNARY_PRE_INC || node->data.unary.op == UNARY_PRE_DEC ||
+            node->data.unary.op == UNARY_POST_INC || node->data.unary.op == UNARY_POST_DEC)
+            return infer_type(node->data.unary.operand);
+        return type_primitive(TYPE_INT);
+
+    case AST_INPUT:
+        return type_primitive(TYPE_STRING);
+    case AST_TYPE_CONV:
+        return node->data.typeconv.target;
+
     case AST_FUNC_CALL:
     {
         FuncInfo *fi = symtab_lookup_func(node->data.func_call.name);
         if (fi)
             return fi->return_type;
-        return TYPE_INT; // fallback
+        return type_primitive(TYPE_INT);
     }
-    case AST_VARIABLE:
-        return node->varType;
 
-    case AST_BINARY:
-    {
-        VarType left = infer_type(node->data.binary.left);
-        VarType right = infer_type(node->data.binary.right);
-        BinaryOp op = node->data.binary.op;
-        if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT || op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
-        {
-            return TYPE_BOOL;
-        }
+    case AST_ARRAY_ACCESS:
+        return node->data.array_access.element_type;
 
-        if (op == OP_POW)
-            return TYPE_FLOAT;
-
-        if (op == OP_ADD && left == TYPE_STRING && right == TYPE_STRING)
-            return TYPE_STRING;
-        if (op == OP_MUL)
-        {
-            if ((left == TYPE_STRING && right == TYPE_INT) ||
-                (left == TYPE_INT && right == TYPE_STRING))
-                return TYPE_STRING;
-        }
-        // Arithmetic operators: if either operand is float, result is float; otherwise int.
-        if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
-            op == OP_MOD || op == OP_FLDIV)
-        {
-            if (left == TYPE_FLOAT || right == TYPE_FLOAT)
-                return TYPE_FLOAT;
-            return TYPE_INT; // both ints -> int
-        }
-
-        if (op == OP_ASSIGN)
-        {
-            return infer_type(node->data.binary.left); // type of left side
-        }
-
-        // compound assignment yields the type of the left operand
-        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN ||
-            op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN || op == OP_POW_ASSIGN ||
-            op == OP_FLDIV_ASSIGN)
-        {
-            return infer_type(node->data.binary.left);
-        }
-
-        return TYPE_INT; // fallback
-    }
-    case AST_UNARY:
-        if (node->data.unary.op == UNARY_NOT)
-            return TYPE_BOOL;
-        if (node->data.unary.op == UNARY_PRE_INC || node->data.unary.op == UNARY_PRE_DEC ||
-            node->data.unary.op == UNARY_POST_INC || node->data.unary.op == UNARY_POST_DEC)
-            return infer_type(node->data.unary.operand);
-        return TYPE_INT;
-
-    case AST_INPUT:
-        return TYPE_STRING;
-
-    case AST_TYPE_CONV:
-        return node->data.typeconv.target;
+    case AST_ARRAY_LITERAL:
+        return type_primitive(TYPE_INT);
 
     default:
-        return TYPE_INT; // <- caused mental damage
+        return type_primitive(TYPE_INT);
     }
 }
 
@@ -188,13 +191,13 @@ void generate_code(ASTNode *program, FILE *out)
         ASTNode *stmt = program->data.program.statements[i];
         if (stmt->type == AST_FUNC_DEF)
         {
-            fprintf(out, "%s %s(", ctype_string(stmt->data.func_def.return_type),
+            fprintf(out, "%s %s(", type_to_c_string(stmt->data.func_def.return_type),
                     stmt->data.func_def.name);
             for (int j = 0; j < stmt->data.func_def.param_count; j++)
             {
                 if (j > 0)
                     fprintf(out, ", ");
-                fprintf(out, "%s %s", ctype_string(stmt->data.func_def.params[j].type),
+                fprintf(out, "%s %s", type_to_c_string(stmt->data.func_def.params[j].type),
                         stmt->data.func_def.params[j].name);
             }
             fprintf(out, ");\n");
@@ -235,14 +238,14 @@ static void emit_function_definition(ASTNode *node, FILE *out)
     if (node->type != AST_FUNC_DEF)
         return;
 
-    fprintf(out, "%s %s(", ctype_string(node->data.func_def.return_type),
+    fprintf(out, "%s %s(", type_to_c_string(node->data.func_def.return_type),
             node->data.func_def.name);
 
     for (int i = 0; i < node->data.func_def.param_count; i++)
     {
         if (i > 0)
             fprintf(out, ", ");
-        fprintf(out, "%s %s", ctype_string(node->data.func_def.params[i].type),
+        fprintf(out, "%s %s", type_to_c_string(node->data.func_def.params[i].type),
                 node->data.func_def.params[i].name);
     }
     fprintf(out, ") {\n");
@@ -260,7 +263,7 @@ static void emit_function_definition(ASTNode *node, FILE *out)
 
 static void emit_expression_maybe_bool(ASTNode *node, FILE *out) // boolean helper
 {
-    if (infer_type(node) == TYPE_BOOL)
+    if (type_is_primitive(infer_type(node), TYPE_BOOL))
     {
         fprintf(out, "((");
         emit_expression(node, out);
@@ -304,15 +307,30 @@ static void emit_statement(ASTNode *node, FILE *out, int indent_level)
 
     case AST_LET:
         indent(out, indent_level);
-        fprintf(out, "%s %s", ctype_string(node->data.let.vartype),
-                node->data.let.name);
-        if (node->data.let.init)
+        if (node->data.let.vartype && node->data.let.vartype->kind == TYPE_ARRAY)
         {
-            fprintf(out, " = ");
-            emit_expression(node->data.let.init, out);
+            fprintf(out, "%s %s[%d]",
+                    type_to_c_string(node->data.let.vartype->as.array.element),
+                    node->data.let.name,
+                    node->data.let.vartype->as.array.size);
+            if (node->data.let.init)
+            {
+                fprintf(out, " = ");
+                emit_expression(node->data.let.init, out);
+            }
+            fprintf(out, ";\n");
         }
-        fprintf(out, ";\n");
-        break;
+        else
+        {
+            fprintf(out, "%s %s", type_to_c_string(node->data.let.vartype),
+                    node->data.let.name);
+            if (node->data.let.init)
+            {
+                fprintf(out, " = ");
+                emit_expression(node->data.let.init, out);
+            }
+            fprintf(out, ";\n");
+        }
         break;
 
     case AST_ASSIGN:
@@ -390,7 +408,7 @@ static void emit_statement(ASTNode *node, FILE *out, int indent_level)
             if (node->data.forloop.init->type == AST_LET)
             {
                 ASTNode *let_node = node->data.forloop.init;
-                fprintf(out, "%s %s = ", ctype_string(let_node->data.let.vartype), let_node->data.let.name);
+                fprintf(out, "%s %s = ", type_to_c_string(let_node->data.let.vartype), let_node->data.let.name);
                 emit_expression(let_node->data.let.init, out);
             }
             else
@@ -621,10 +639,10 @@ static void emit_expression(ASTNode *node, FILE *out)
         BinaryOp op = node->data.binary.op;
         ASTNode *left = node->data.binary.left;
         ASTNode *right = node->data.binary.right;
-        VarType ltype = infer_type(left);
-        VarType rtype = infer_type(right);
+        Type *ltype = infer_type(left);
+        Type *rtype = infer_type(right);
 
-        if ((op == OP_EQ || op == OP_NE) && ltype == TYPE_STRING && rtype == TYPE_STRING)
+        if ((op == OP_EQ || op == OP_NE) && type_is_primitive(ltype, TYPE_STRING) && type_is_primitive(rtype, TYPE_STRING))
         {
             fprintf(out, "(strcmp(");
             emit_expression(left, out);
@@ -635,7 +653,7 @@ static void emit_expression(ASTNode *node, FILE *out)
         }
 
         /* String concatenation */
-        if (op == OP_ADD && ltype == TYPE_STRING && rtype == TYPE_STRING)
+        if (op == OP_ADD && type_is_primitive(ltype, TYPE_STRING) && type_is_primitive(rtype, TYPE_STRING))
         {
             fprintf(out, "quasar_strcat(");
             emit_expression(left, out);
@@ -647,7 +665,7 @@ static void emit_expression(ASTNode *node, FILE *out)
         /* String repetition */
         if (op == OP_MUL)
         {
-            if (ltype == TYPE_STRING && rtype == TYPE_INT)
+            if (type_is_primitive(ltype, TYPE_STRING) && type_is_primitive(rtype, TYPE_INT))
             {
                 fprintf(out, "quasar_strrep(");
                 emit_expression(left, out);
@@ -656,7 +674,7 @@ static void emit_expression(ASTNode *node, FILE *out)
                 fprintf(out, ")");
                 break;
             }
-            if (ltype == TYPE_INT && rtype == TYPE_STRING)
+            if (type_is_primitive(ltype, TYPE_INT) && type_is_primitive(rtype, TYPE_STRING))
             {
                 fprintf(out, "quasar_strrep(");
                 emit_expression(right, out);
@@ -741,32 +759,32 @@ static void emit_expression(ASTNode *node, FILE *out)
         break;
     case AST_TYPE_CONV:
     {
-        VarType target = node->data.typeconv.target;
+        Type *target = node->data.typeconv.target;
         ASTNode *arg = node->data.typeconv.source;
-        VarType src_type = infer_type(arg);
+        Type *src_type = infer_type(arg);
 
-        switch (target)
+        switch (target->as.primitive)
         {
         case TYPE_INT:
-            if (src_type == TYPE_STRING)
+            if (type_is_primitive(src_type, TYPE_STRING))
             {
                 fprintf(out, "atoi(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_FLOAT)
+            else if (type_is_primitive(src_type, TYPE_FLOAT))
             {
                 fprintf(out, "(int)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_CHAR)
+            else if (type_is_primitive(src_type, TYPE_CHAR))
             {
                 fprintf(out, "(int)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_BOOL)
+            else if (type_is_primitive(src_type, TYPE_BOOL))
             {
                 fprintf(out, "(int)(");
                 emit_expression(arg, out);
@@ -774,30 +792,30 @@ static void emit_expression(ASTNode *node, FILE *out)
             }
             else
             {
-                emit_expression(arg, out); // already int
+                emit_expression(arg, out);
             }
             break;
 
         case TYPE_FLOAT:
-            if (src_type == TYPE_STRING)
+            if (type_is_primitive(src_type, TYPE_STRING))
             {
                 fprintf(out, "atof(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_INT)
+            else if (type_is_primitive(src_type, TYPE_INT))
             {
                 fprintf(out, "(double)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_CHAR)
+            else if (type_is_primitive(src_type, TYPE_CHAR))
             {
                 fprintf(out, "(double)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_BOOL)
+            else if (type_is_primitive(src_type, TYPE_BOOL))
             {
                 fprintf(out, "(double)(");
                 emit_expression(arg, out);
@@ -805,12 +823,12 @@ static void emit_expression(ASTNode *node, FILE *out)
             }
             else
             {
-                emit_expression(arg, out); // already float/double
+                emit_expression(arg, out);
             }
             break;
 
         case TYPE_STRING:
-            if (src_type == TYPE_STRING)
+            if (type_is_primitive(src_type, TYPE_STRING))
             {
                 emit_expression(arg, out);
             }
@@ -823,13 +841,13 @@ static void emit_expression(ASTNode *node, FILE *out)
             break;
 
         case TYPE_CHAR:
-            if (src_type == TYPE_INT)
+            if (type_is_primitive(src_type, TYPE_INT))
             {
                 fprintf(out, "(char)(");
                 emit_expression(arg, out);
                 fprintf(out, ")");
             }
-            else if (src_type == TYPE_STRING)
+            else if (type_is_primitive(src_type, TYPE_STRING))
             {
                 fprintf(out, "(");
                 emit_expression(arg, out);
@@ -844,11 +862,11 @@ static void emit_expression(ASTNode *node, FILE *out)
             break;
 
         case TYPE_BOOL:
-            if (src_type == TYPE_BOOL)
+            if (type_is_primitive(src_type, TYPE_BOOL))
             {
                 emit_expression(arg, out);
             }
-            else if (src_type == TYPE_STRING)
+            else if (type_is_primitive(src_type, TYPE_STRING))
             {
                 fprintf(out, "((strcmp(");
                 emit_expression(arg, out);
@@ -879,6 +897,26 @@ static void emit_expression(ASTNode *node, FILE *out)
             emit_expression(node->data.func_call.args[i], out);
         }
         fprintf(out, ")");
+        break;
+    }
+    case AST_ARRAY_LITERAL:
+    {
+        fprintf(out, "{");
+        for (int i = 0; i < node->data.array_literal.count; i++)
+        {
+            if (i > 0)
+                fprintf(out, ", ");
+            emit_expression(node->data.array_literal.elements[i], out);
+        }
+        fprintf(out, "}");
+        break;
+    }
+    case AST_ARRAY_ACCESS:
+    {
+        emit_expression(node->data.array_access.array, out);
+        fprintf(out, "[");
+        emit_expression(node->data.array_access.index, out);
+        fprintf(out, "]");
         break;
     }
 

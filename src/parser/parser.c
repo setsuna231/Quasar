@@ -3,6 +3,7 @@
 #include "lexer/lexer.h"
 #include "symtab/symtab.h"
 #include "error/error.h"
+#include "type/type.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -11,9 +12,10 @@
 static const char *g_source;
 static int g_pos;
 static Token g_current;
-static VarType g_current_func_return_type = TYPE_VOID;
+static Type *g_current_func_return_type = NULL;
 static bool g_inside_function = false;
 static int g_loop_depth = 0;
+static int g_breakable_depth = 0;
 
 #define ERROR_AT(...) parser_error_report(g_current.line, g_current.col, __VA_ARGS__)
 #define WARNING_AT(...) parser_warning_report(g_current.line, g_current.col, __VA_ARGS__)
@@ -41,108 +43,124 @@ static ASTNode *parse_fallthrough_statement(void);
 static ASTNode *parse_func_def(void);
 static ASTNode *parse_func_call(const char *name);
 
-static VarType expr_type(ASTNode *node);
+static Type *expr_type(ASTNode *node);
 static void build_print_format(ASTNode *print_node);
 static bool variable_in_expr(ASTNode *node, const char *name);
 static bool variable_in_stmt(ASTNode *stmt, const char *name);
 int parser_error_count(void);
 static int parse_errors = 0;
 
-static VarType infer_type(ASTNode *node)
+static Type *infer_type(ASTNode *node)
 {
     if (!node)
-        return TYPE_INT; // safe default
+        return type_primitive(TYPE_INT);
+
     switch (node->type)
     {
     case AST_INTEGER:
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     case AST_FLOAT:
-        return TYPE_FLOAT;
+        return type_primitive(TYPE_FLOAT);
     case AST_STRING:
-        return TYPE_STRING;
+        return type_primitive(TYPE_STRING);
     case AST_CHAR:
-        return TYPE_CHAR;
+        return type_primitive(TYPE_CHAR);
     case AST_BOOL:
-        return TYPE_BOOL;
+        return type_primitive(TYPE_BOOL);
     case AST_VARIABLE:
-        return symtab_lookup(node->data.varName);
+        return node->varType ? node->varType : type_primitive(TYPE_INT);
 
     case AST_BINARY:
     {
-        VarType left = infer_type(node->data.binary.left);
-        VarType right = infer_type(node->data.binary.right);
+        Type *left = infer_type(node->data.binary.left);
+        Type *right = infer_type(node->data.binary.right);
         BinaryOp op = node->data.binary.op;
+
         if (op == OP_POW)
-            return TYPE_FLOAT;
-        if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT || op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
-        {
-            return TYPE_BOOL;
-        }
-        if (op == OP_ADD && left == TYPE_STRING && right == TYPE_STRING)
-            return TYPE_STRING;
+            return type_primitive(TYPE_FLOAT);
+        if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT ||
+            op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
+            return type_primitive(TYPE_BOOL);
+
+        if (op == OP_ADD && type_is_primitive(left, TYPE_STRING) &&
+            type_is_primitive(right, TYPE_STRING))
+            return type_primitive(TYPE_STRING);
+
         if (op == OP_MUL)
         {
-            if ((left == TYPE_STRING && right == TYPE_INT) ||
-                (left == TYPE_INT && right == TYPE_STRING))
-                return TYPE_STRING;
+            if ((type_is_primitive(left, TYPE_STRING) && type_is_primitive(right, TYPE_INT)) ||
+                (type_is_primitive(left, TYPE_INT) && type_is_primitive(right, TYPE_STRING)))
+                return type_primitive(TYPE_STRING);
         }
-        // Arithmetic operators: if either operand is float, result is float; otherwise int.
+
         if (op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
             op == OP_MOD || op == OP_FLDIV)
         {
-            if (left == TYPE_FLOAT || right == TYPE_FLOAT)
-                return TYPE_FLOAT;
-            return TYPE_INT; // both ints -> int
+            if (type_is_primitive(left, TYPE_FLOAT) || type_is_primitive(right, TYPE_FLOAT))
+                return type_primitive(TYPE_FLOAT);
+            return type_primitive(TYPE_INT);
         }
-        // For future operators (relational, logical), they will return TYPE_BOOL (int).
-        // We'll handle them when we add those operators.
-        return TYPE_INT; // fallback
+
+        if (op == OP_ASSIGN)
+            return left;
+        if (op == OP_ADD_ASSIGN || op == OP_SUB_ASSIGN || op == OP_MUL_ASSIGN ||
+            op == OP_DIV_ASSIGN || op == OP_MOD_ASSIGN || op == OP_POW_ASSIGN ||
+            op == OP_FLDIV_ASSIGN)
+            return left;
+
+        return type_primitive(TYPE_INT);
     }
+
+    case AST_UNARY:
+        if (node->data.unary.op == UNARY_NOT)
+            return type_primitive(TYPE_BOOL);
+        if (node->data.unary.op == UNARY_PRE_INC || node->data.unary.op == UNARY_PRE_DEC ||
+            node->data.unary.op == UNARY_POST_INC || node->data.unary.op == UNARY_POST_DEC)
+            return infer_type(node->data.unary.operand);
+        return type_primitive(TYPE_INT);
+
+    case AST_INPUT:
+        return type_primitive(TYPE_STRING);
+    case AST_TYPE_CONV:
+        return node->data.typeconv.target;
 
     case AST_FUNC_CALL:
     {
         FuncInfo *fi = symtab_lookup_func(node->data.func_call.name);
         if (fi)
             return fi->return_type;
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     }
 
-    case AST_UNARY:
-    {
-        if (node->data.unary.op == UNARY_NOT)
-            return TYPE_BOOL;
-        if (node->data.unary.op == UNARY_PRE_INC || node->data.unary.op == UNARY_PRE_DEC ||
-            node->data.unary.op == UNARY_POST_INC || node->data.unary.op == UNARY_POST_DEC)
-            return infer_type(node->data.unary.operand);
-        return TYPE_INT;
-    }
-
-    case AST_TYPE_CONV:
-        return node->data.typeconv.target;
+    case AST_ARRAY_ACCESS:
+        return node->data.array_access.element_type;
+    case AST_ARRAY_LITERAL:
+        return type_primitive(TYPE_INT);
 
     default:
-        return TYPE_INT; // safe fallback for any unknown node
+        return type_primitive(TYPE_INT);
     }
 }
 
 static bool check_unary_types(UnaryOp op, ASTNode *operand)
 {
-    VarType t = infer_type(operand);
+    Type *t = infer_type(operand);
     if (op == UNARY_NOT)
     {
-        if (t != TYPE_INT && t != TYPE_FLOAT && t != TYPE_BOOL)
+        if (!type_is_primitive(t, TYPE_INT) && !type_is_primitive(t, TYPE_FLOAT) &&
+            !type_is_primitive(t, TYPE_BOOL))
         {
-            ERROR_AT("invalid operand type for '!': %s\n", ctype_string(t));
+            ERROR_AT("invalid operand type for '!': %s\n", type_to_string(t));
             parse_errors++;
             return false;
         }
     }
     else if (op == UNARY_MINUS || op == UNARY_PLUS)
     {
-        if (t != TYPE_INT && t != TYPE_FLOAT)
+        if (!type_is_primitive(t, TYPE_INT) && !type_is_primitive(t, TYPE_FLOAT))
         {
             ERROR_AT("invalid operand type for unary '%c': %s\n",
-                     op == UNARY_MINUS ? '-' : '+', ctype_string(t));
+                     op == UNARY_MINUS ? '-' : '+', type_to_string(t));
             parse_errors++;
             return false;
         }
@@ -150,16 +168,15 @@ static bool check_unary_types(UnaryOp op, ASTNode *operand)
     else if (op == UNARY_PRE_INC || op == UNARY_PRE_DEC ||
              op == UNARY_POST_INC || op == UNARY_POST_DEC)
     {
-        // Must be a variable (identifier) and numeric.
         if (operand->type != AST_VARIABLE)
         {
             ERROR_AT("increment/decrement operand must be a variable\n");
             parse_errors++;
             return false;
         }
-        if (t != TYPE_INT && t != TYPE_FLOAT)
+        if (!type_is_primitive(t, TYPE_INT) && !type_is_primitive(t, TYPE_FLOAT))
         {
-            ERROR_AT("invalid operand type for ++/--: %s\n", ctype_string(t));
+            ERROR_AT("invalid operand type for ++/--: %s\n", type_to_string(t));
             parse_errors++;
             return false;
         }
@@ -168,61 +185,57 @@ static bool check_unary_types(UnaryOp op, ASTNode *operand)
 }
 
 // Returns true if a value of type `source` can be assigned to a variable of type `target`.
-static bool compatible_assignment(VarType target, VarType source)
+static bool compatible_assignment(Type *target, Type *source)
 {
-    if (target == source)
+    if (!target || !source)
+        return false;
+    if (type_equal(target, source))
         return true;
-    // Allow implicit int → float
-    if (target == TYPE_FLOAT && source == TYPE_INT)
+    if (type_is_primitive(target, TYPE_FLOAT) && type_is_primitive(source, TYPE_INT))
         return true;
     return false;
 }
 
-static bool valid_binary_types(VarType left, VarType right, BinaryOp op)
+static bool valid_binary_types(Type *left, Type *right, BinaryOp op)
 {
     switch (op)
     {
     case OP_ADD:
-        // string concatenation
-        if (left == TYPE_STRING && right == TYPE_STRING)
+        if (type_is_primitive(left, TYPE_STRING) && type_is_primitive(right, TYPE_STRING))
             return true;
-        // numeric addition (fallthrough to arithmetic check)
-        return (left == TYPE_INT || left == TYPE_FLOAT) &&
-               (right == TYPE_INT || right == TYPE_FLOAT);
-
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT));
     case OP_MUL:
-        // string repetition
-        if ((left == TYPE_STRING && right == TYPE_INT) ||
-            (left == TYPE_INT && right == TYPE_STRING))
+        if ((type_is_primitive(left, TYPE_STRING) && type_is_primitive(right, TYPE_INT)) ||
+            (type_is_primitive(left, TYPE_INT) && type_is_primitive(right, TYPE_STRING)))
             return true;
-        // numeric multiplication
-        return (left == TYPE_INT || left == TYPE_FLOAT) &&
-               (right == TYPE_INT || right == TYPE_FLOAT);
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT));
     case OP_SUB:
     case OP_DIV:
     case OP_MOD:
     case OP_POW:
     case OP_FLDIV:
-        return (left == TYPE_INT || left == TYPE_FLOAT) &&
-               (right == TYPE_INT || right == TYPE_FLOAT);
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT));
     case OP_EQ:
     case OP_NE:
-        if (left == TYPE_STRING && right == TYPE_STRING)
+        if (type_is_primitive(left, TYPE_STRING) && type_is_primitive(right, TYPE_STRING))
             return true;
-        return (left == TYPE_INT || left == TYPE_FLOAT || left == TYPE_BOOL) &&
-               (right == TYPE_INT || right == TYPE_FLOAT || right == TYPE_BOOL);
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT) || type_is_primitive(left, TYPE_BOOL)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT) || type_is_primitive(right, TYPE_BOOL));
     case OP_LT:
     case OP_GT:
     case OP_LE:
     case OP_GE:
-        return (left == TYPE_INT || left == TYPE_FLOAT) &&
-               (right == TYPE_INT || right == TYPE_FLOAT);
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT));
     case OP_AND:
     case OP_OR:
-        return (left == TYPE_INT || left == TYPE_FLOAT || left == TYPE_BOOL) &&
-               (right == TYPE_INT || right == TYPE_FLOAT || right == TYPE_BOOL);
+        return (type_is_primitive(left, TYPE_INT) || type_is_primitive(left, TYPE_FLOAT) || type_is_primitive(left, TYPE_BOOL)) &&
+               (type_is_primitive(right, TYPE_INT) || type_is_primitive(right, TYPE_FLOAT) || type_is_primitive(right, TYPE_BOOL));
     case OP_ASSIGN:
-        return true; // allow any assignment type for now (the parser does finer checks)
+        return true;
     default:
         return false;
     }
@@ -230,121 +243,67 @@ static bool valid_binary_types(VarType left, VarType right, BinaryOp op)
 
 static bool check_binary_types(BinaryOp op, ASTNode *left, ASTNode *right)
 {
-    VarType ltype = infer_type(left);
-    VarType rtype = infer_type(right);
+    Type *ltype = infer_type(left);
+    Type *rtype = infer_type(right);
     if (!valid_binary_types(ltype, rtype, op))
     {
-        // Determine if it's arithmetic or relational based on op
-        bool is_relational = (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT || op == OP_LE || op == OP_GE);
-        char op_str[8] = "?";
-        switch (op)
-        {
-        case OP_ADD:
-            strcpy(op_str, "+");
-            break;
-        case OP_SUB:
-            strcpy(op_str, "-");
-            break;
-        case OP_MUL:
-            strcpy(op_str, "*");
-            break;
-        case OP_DIV:
-            strcpy(op_str, "/");
-            break;
-        case OP_MOD:
-            strcpy(op_str, "%%");
-            break;
-        case OP_POW:
-            strcpy(op_str, "**");
-            break;
-        case OP_FLDIV:
-            strcpy(op_str, "//");
-            break;
-        case OP_EQ:
-            strcpy(op_str, "==");
-            break;
-        case OP_NE:
-            strcpy(op_str, "!=");
-            break;
-        case OP_LT:
-            strcpy(op_str, "<");
-            break;
-        case OP_GT:
-            strcpy(op_str, ">");
-            break;
-        case OP_LE:
-            strcpy(op_str, "<=");
-            break;
-        case OP_GE:
-            strcpy(op_str, ">=");
-            break;
-        default:
-            strcpy(op_str, "?");
-            break;
-        }
-
-        ERROR_AT("invalid operand types for %s operator (%s): %s and %s\n",
-                 is_relational ? "relational" : "arithmetic",
-                 op_str,
-                 ctype_string(ltype),
-                 ctype_string(rtype));
+        ERROR_AT("invalid operand types for operator: %s and %s\n",
+                 type_to_string(ltype), type_to_string(rtype));
         parse_errors++;
         return false;
     }
     return true;
 }
 
-static VarType expr_type(ASTNode *node)
+static Type *expr_type(ASTNode *node)
 {
     if (!node)
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     switch (node->type)
     {
     case AST_INTEGER:
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     case AST_FLOAT:
-        return TYPE_FLOAT;
+        return type_primitive(TYPE_FLOAT);
     case AST_STRING:
-        return TYPE_STRING;
+        return type_primitive(TYPE_STRING);
     case AST_CHAR:
-        return TYPE_CHAR;
+        return type_primitive(TYPE_CHAR);
     case AST_BOOL:
-        return TYPE_BOOL;
+        return type_primitive(TYPE_BOOL);
     case AST_VARIABLE:
-        return symtab_lookup(node->data.varName); // keep for now (we'll migrate to varType later)
+        return symtab_lookup_type(node->data.varName);
     case AST_INPUT:
-        return TYPE_STRING;
+        return type_primitive(TYPE_STRING);
     case AST_TYPE_CONV:
         return node->data.typeconv.target;
     case AST_BINARY:
     case AST_UNARY:
-        return infer_type(node); // use the fully‑fledged inference
-                                 // case AST_FUNC_CALL:
-        //  later return the function's declared return type; for now fallback
+    case AST_ARRAY_ACCESS:
         return infer_type(node);
     default:
-        return infer_type(node); // catch‑all for any future expression types
+        return infer_type(node);
     }
 }
 
-static VarType token_to_vartype(QTokenType type)
+static Type *token_to_type(QTokenType type)
 {
     switch (type)
     {
     case QTOKEN_TYPE_INT:
-        return TYPE_INT;
+        return type_primitive(TYPE_INT);
     case QTOKEN_TYPE_FLOAT:
-        return TYPE_FLOAT;
+        return type_primitive(TYPE_FLOAT);
     case QTOKEN_TYPE_STRING:
-        return TYPE_STRING;
+        return type_primitive(TYPE_STRING);
     case QTOKEN_TYPE_CHAR:
-        return TYPE_CHAR;
+        return type_primitive(TYPE_CHAR);
     case QTOKEN_TYPE_BOOL:
-        return TYPE_BOOL;
+        return type_primitive(TYPE_BOOL);
     case QTOKEN_TYPE_VOID:
-        return TYPE_VOID;
+        return type_primitive(TYPE_VOID);
     default:
-        return TYPE_INT; // error, but keep going
+        return type_primitive(TYPE_INT);
     }
 }
 
@@ -358,6 +317,10 @@ const char *token_name(QTokenType type)
         return "'('";
     case QTOKEN_RPAREN:
         return "')'";
+    case QTOKEN_LBRACKET:
+        return "'['";
+    case QTOKEN_RBRACKET:
+        return "']'";
     case QTOKEN_INTEGER:
         return "integer literal";
     case QTOKEN_FLOAT:
@@ -571,22 +534,17 @@ static bool expect(QTokenType type, const char *context)
 
 static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
 {
-    // left must be a plain variable (for now)
     if (left->type != AST_VARIABLE)
     {
         ERROR_AT("left side of assignment must be a variable\n");
         parse_errors++;
         return false;
     }
-    VarType left_type = symtab_lookup(left->data.varName);
-    VarType right_type = expr_type(right); // infer_type from parser
+    Type *left_type = symtab_lookup_type(left->data.varName);
+    Type *right_type = expr_type(right);
 
-    // For compound assignment, the operation must also be type‑safe
-    // For +=, -=, etc., both sides must be arithmetic (int/float)
     if (op != OP_ASSIGN)
     {
-        // check that the implied binary operation is valid
-        // e.g., i += "hello" should be rejected
         BinaryOp inner_op;
         switch (op)
         {
@@ -614,7 +572,6 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
         default:
             return false;
         }
-        // reuse your existing arithmetic type‑check
         if (!valid_binary_types(left_type, right_type, inner_op))
         {
             ERROR_AT("invalid operand types for compound assignment\n");
@@ -624,11 +581,10 @@ static bool check_assignment_op(BinaryOp op, ASTNode *left, ASTNode *right)
     }
     else
     {
-        // plain assignment: use compatible_assignment
         if (!compatible_assignment(left_type, right_type))
         {
             ERROR_AT("type mismatch in assignment - expected %s but got %s\n",
-                     ctype_string(left_type), ctype_string(right_type));
+                     type_to_string(left_type), type_to_string(right_type));
             parse_errors++;
             return false;
         }
@@ -679,9 +635,9 @@ static ASTNode *parse_break_statement(void)
     if (!expect(QTOKEN_SEMICOLON, "expected ';' after 'break'"))
         return NULL;
 
-    if (g_loop_depth == 0)
+    if (g_breakable_depth == 0)
     {
-        ERROR_AT("'break' outside of a loop\n");
+        ERROR_AT("'break' outside of a loop or match\n");
         parse_errors++;
         return NULL;
     }
@@ -730,7 +686,7 @@ static ASTNode *parse_return_statement(void)
         return NULL;
     }
 
-    if (expr && g_current_func_return_type == TYPE_VOID)
+    if (expr && type_is_primitive(g_current_func_return_type, TYPE_VOID))
     {
         ERROR_AT("cannot return a value from a void function\n");
         parse_errors++;
@@ -738,20 +694,21 @@ static ASTNode *parse_return_statement(void)
         return NULL;
     }
 
-    if (!expr && g_current_func_return_type != TYPE_VOID)
+    if (!expr && !type_is_primitive(g_current_func_return_type, TYPE_VOID))
     {
         ERROR_AT("expected return value in non-void function\n");
         parse_errors++;
         return NULL;
     }
 
-    if (expr && g_current_func_return_type != TYPE_VOID)
+    if (expr && !type_is_primitive(g_current_func_return_type, TYPE_VOID))
     {
-        VarType expr_t = expr_type(expr);
+        Type *expr_t = expr_type(expr);
         if (!compatible_assignment(g_current_func_return_type, expr_t))
         {
             ERROR_AT("return type mismatch: expected %s but got %s\n",
-                     ctype_string(g_current_func_return_type), ctype_string(expr_t));
+                     type_to_string(g_current_func_return_type),
+                     type_to_string(expr_t));
             parse_errors++;
             free_ast(expr);
             return NULL;
@@ -794,6 +751,50 @@ static ASTNode *parse_postfix(void)
             free(fname);
             if (!node)
                 return NULL;
+        }
+        else if (g_current.type == QTOKEN_LBRACKET)
+        {
+            advance();
+            ASTNode *index = parse_expression();
+            if (!index)
+            {
+                free_ast(node);
+                return NULL;
+            }
+            if (!expect(QTOKEN_RBRACKET, "expected ']' after index"))
+            {
+                free_ast(index);
+                free_ast(node);
+                return NULL;
+            }
+            Type *idx_type = expr_type(index);
+            if (!type_is_primitive(idx_type, TYPE_INT))
+            {
+                ERROR_AT("array index must be an integer, got %s\n",
+                         type_to_string(idx_type));
+                parse_errors++;
+                free_ast(index);
+                free_ast(node);
+                return NULL;
+            }
+            if (node->type != AST_VARIABLE)
+            {
+                ERROR_AT("can only index variables for now\n");
+                parse_errors++;
+                free_ast(index);
+                free_ast(node);
+                return NULL;
+            }
+            Symbol *sym = symtab_find(node->data.varName);
+            if (!sym || !sym->type || sym->type->kind != TYPE_ARRAY)
+            {
+                ERROR_AT("indexing non-array variable '%s'\n", node->data.varName);
+                parse_errors++;
+                free_ast(index);
+                free_ast(node);
+                return NULL;
+            }
+            node = make_array_access(node, index, sym->type->as.array.element);
         }
         else
         {
@@ -944,8 +945,10 @@ static ASTNode *parse_while_statement(void)
     }
 
     g_loop_depth++;
+    g_breakable_depth++;
     ASTNode *body = parse_block();
     g_loop_depth--;
+    g_breakable_depth--;
 
     if (!body)
     {
@@ -968,8 +971,10 @@ static ASTNode *parse_repeat_until_statement(void)
     }
 
     g_loop_depth++;
+    g_breakable_depth++;
     ASTNode *body = parse_block();
     g_loop_depth--;
+    g_breakable_depth--;
 
     if (!body)
         return NULL;
@@ -1136,6 +1141,41 @@ static ASTNode *parse_logical_or(void)
     return node;
 }
 
+static ASTNode *parse_array_literal(void)
+{
+    if (!expect(QTOKEN_LBRACE, "expected '{' to start array literal"))
+        return NULL;
+
+    ASTNode *literal = make_array_literal();
+    if (g_current.type == QTOKEN_RBRACE)
+    {
+        advance();
+        return literal;
+    }
+
+    while (1)
+    {
+        ASTNode *element = parse_expression();
+        if (!element)
+        {
+            free_ast(literal);
+            return NULL;
+        }
+        array_literal_add(literal, element);
+        if (g_current.type == QTOKEN_COMMA)
+            advance();
+        else
+            break;
+    }
+
+    if (!expect(QTOKEN_RBRACE, "expected '}' after array literal"))
+    {
+        free_ast(literal);
+        return NULL;
+    }
+    return literal;
+}
+
 static ASTNode *parse_block(void)
 {
     if (!expect(QTOKEN_LBRACE, "expected '{' to start block"))
@@ -1229,11 +1269,11 @@ static ASTNode *parse_primary(void)
                 return NULL;
 
             // Type check: prompt must be a string
-            VarType pt = expr_type(prompt);
-            if (pt != TYPE_STRING)
+            Type *pt = expr_type(prompt);
+            if (!type_is_primitive(pt, TYPE_STRING))
             {
                 ERROR_AT("input prompt must be a string, got %s\n",
-                         ctype_string(pt));
+                         type_to_string(pt));
                 parse_errors++;
                 free_ast(prompt);
                 return NULL;
@@ -1250,28 +1290,29 @@ static ASTNode *parse_primary(void)
         g_current.type == QTOKEN_TO_STRING || g_current.type == QTOKEN_TO_CHAR ||
         g_current.type == QTOKEN_TO_BOOL)
     {
-        VarType target;
+        VarType target_prim;
         switch (g_current.type)
         {
         case QTOKEN_TO_INT:
-            target = TYPE_INT;
+            target_prim = TYPE_INT;
             break;
         case QTOKEN_TO_FLOAT:
-            target = TYPE_FLOAT;
+            target_prim = TYPE_FLOAT;
             break;
         case QTOKEN_TO_STRING:
-            target = TYPE_STRING;
+            target_prim = TYPE_STRING;
             break;
         case QTOKEN_TO_CHAR:
-            target = TYPE_CHAR;
+            target_prim = TYPE_CHAR;
             break;
         case QTOKEN_TO_BOOL:
-            target = TYPE_BOOL;
+            target_prim = TYPE_BOOL;
             break;
         default:
-            return NULL; // unreachable
+            return NULL;
         }
-        advance(); // consume the conversion keyword
+        Type *target = type_primitive(target_prim);
+        advance();
 
         if (!expect(QTOKEN_LPAREN, "expected '(' after conversion function"))
             return NULL;
@@ -1283,29 +1324,32 @@ static ASTNode *parse_primary(void)
         if (!expect(QTOKEN_RPAREN, "expected ')' after conversion argument"))
             return NULL;
 
-        // Type‑check the argument (loose for now – we'll let C handle errors)
-        // But we can give warnings for known bad conversions
-        VarType arg_type = expr_type(arg);
-        switch (target)
+        Type *arg_type = expr_type(arg);
+        switch (target_prim)
         {
         case TYPE_INT:
         case TYPE_FLOAT:
-            if (arg_type != TYPE_STRING && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
+            if (!type_is_primitive(arg_type, TYPE_STRING) &&
+                !type_is_primitive(arg_type, TYPE_INT) &&
+                !type_is_primitive(arg_type, TYPE_FLOAT))
             {
                 WARNING_AT("to_int/to_float expects a string or number\n");
             }
             break;
         case TYPE_STRING:
-            // any type can be converted to string – fine
             break;
         case TYPE_CHAR:
-            if (arg_type != TYPE_STRING && arg_type != TYPE_INT)
+            if (!type_is_primitive(arg_type, TYPE_STRING) &&
+                !type_is_primitive(arg_type, TYPE_INT))
             {
                 WARNING_AT("to_char expects a string or integer\n");
             }
             break;
         case TYPE_BOOL:
-            if (arg_type != TYPE_STRING && arg_type != TYPE_BOOL && arg_type != TYPE_INT && arg_type != TYPE_FLOAT)
+            if (!type_is_primitive(arg_type, TYPE_STRING) &&
+                !type_is_primitive(arg_type, TYPE_BOOL) &&
+                !type_is_primitive(arg_type, TYPE_INT) &&
+                !type_is_primitive(arg_type, TYPE_FLOAT))
             {
                 WARNING_AT("to_bool expects a string, bool, or number\n");
             }
@@ -1320,7 +1364,7 @@ static ASTNode *parse_primary(void)
     {
         char *name = strdup(g_current.str);
         advance();
-        VarType vt = symtab_lookup(name);
+        Type *vt = symtab_lookup_type(name);
         return make_variable(name, vt);
     }
     if (g_current.type == QTOKEN_LPAREN)
@@ -1344,7 +1388,6 @@ static ASTNode *parse_primary(void)
 static ASTNode *parse_assignment(char *name)
 {
     // name is the variable being assigned (already consumed from the token)
-    // Current token should be '='
     if (!expect(QTOKEN_EQUALS, "expected '=' in assignment"))
     {
         return NULL;
@@ -1361,12 +1404,12 @@ static ASTNode *parse_assignment(char *name)
     }
 
     // Type check the new value
-    VarType var_type = symtab_lookup(name);
-    VarType val_type = expr_type(value);
+    Type *var_type = symtab_lookup_type(name);
+    Type *val_type = expr_type(value);
     if (!compatible_assignment(var_type, val_type))
     {
         ERROR_AT("type mismatch in assignment to '%s' - expected %s but got %s\n",
-                 name, ctype_string(var_type), ctype_string(val_type));
+                 name, type_to_string(var_type), type_to_string(val_type));
         parse_errors++;
         free(name);
         free_ast(value);
@@ -1438,85 +1481,56 @@ static ASTNode *parse_print_statement(void)
 static void build_print_format(ASTNode *print_node)
 {
     int n = print_node->data.print.count;
-
     if (n == 0)
     {
         print_node->data.print.format = strdup("\n");
         return;
     }
 
-    // First pass: calculate needed length
     size_t len = 0;
     for (int i = 0; i < n; i++)
     {
-        VarType t = infer_type(print_node->data.print.expressions[i]);
-        const char *spec;
-        switch (t)
-        {
-        case TYPE_INT:
+        Type *t = infer_type(print_node->data.print.expressions[i]);
+        const char *spec = "%d";
+        if (type_is_primitive(t, TYPE_INT))
             spec = "%d";
-            break;
-        case TYPE_FLOAT:
+        else if (type_is_primitive(t, TYPE_FLOAT))
             spec = "%g";
-            break;
-        case TYPE_STRING:
+        else if (type_is_primitive(t, TYPE_STRING))
             spec = "%s";
-            break;
-        case TYPE_CHAR:
+        else if (type_is_primitive(t, TYPE_CHAR))
             spec = "%c";
-            break;
-        case TYPE_BOOL:
+        else if (type_is_primitive(t, TYPE_BOOL))
             spec = "%s";
-            break; // bool printed as "true"/"false"
-        default:
-            spec = "%d";
-            break;
-        }
         len += strlen(spec);
         if (i < n - 1)
-            len += 1; // space between args
+            len += 1;
     }
-    len += 2; // backslash-n + null terminator
+    len += 2;
 
     char *format = malloc(len + 1);
     if (!format)
-    {
-        ERROR_AT("memory error building print format\n");
         return;
-    }
 
     size_t pos = 0;
     for (int i = 0; i < n; i++)
     {
-        VarType t = infer_type(print_node->data.print.expressions[i]);
-        const char *spec;
-        switch (t)
-        {
-        case TYPE_INT:
+        Type *t = infer_type(print_node->data.print.expressions[i]);
+        const char *spec = "%d";
+        if (type_is_primitive(t, TYPE_INT))
             spec = "%d";
-            break;
-        case TYPE_FLOAT:
+        else if (type_is_primitive(t, TYPE_FLOAT))
             spec = "%g";
-            break;
-        case TYPE_STRING:
+        else if (type_is_primitive(t, TYPE_STRING))
             spec = "%s";
-            break;
-        case TYPE_CHAR:
+        else if (type_is_primitive(t, TYPE_CHAR))
             spec = "%c";
-            break;
-        case TYPE_BOOL:
+        else if (type_is_primitive(t, TYPE_BOOL))
             spec = "%s";
-            break;
-        default:
-            spec = "%d";
-            break;
-        }
         strcpy(format + pos, spec);
         pos += strlen(spec);
         if (i < n - 1)
-        {
             format[pos++] = ' ';
-        }
     }
     format[pos++] = '\\';
     format[pos++] = 'n';
@@ -1617,6 +1631,7 @@ static ASTNode *parse_match_statement(void)
     // The tokens that end a case body: case, default, or }
     const QTokenType end_tokens[] = {QTOKEN_CASE, QTOKEN_DEFAULT, QTOKEN_RBRACE};
 
+    g_breakable_depth++;
     while (g_current.type != QTOKEN_RBRACE && g_current.type != QTOKEN_EOF)
     {
         if (g_current.type == QTOKEN_CASE)
@@ -1635,12 +1650,14 @@ static ASTNode *parse_match_statement(void)
                 ERROR_AT("case value must be an integer, char, or boolean literal\n");
                 parse_errors++;
                 free_ast(match_node);
+                g_breakable_depth--;
                 return NULL;
             }
 
             if (!expect(QTOKEN_COLON, "expected ':' after case value"))
             {
                 free_ast(match_node);
+                g_breakable_depth--;
                 return NULL;
             }
 
@@ -1649,6 +1666,7 @@ static ASTNode *parse_match_statement(void)
             if (!body)
             {
                 free_ast(match_node);
+                g_breakable_depth--;
                 return NULL;
             }
 
@@ -1661,6 +1679,7 @@ static ASTNode *parse_match_statement(void)
             if (!expect(QTOKEN_COLON, "expected ':' after 'default'"))
             {
                 free_ast(match_node);
+                g_breakable_depth--;
                 return NULL;
             }
 
@@ -1668,6 +1687,7 @@ static ASTNode *parse_match_statement(void)
             if (!body)
             {
                 free_ast(match_node);
+                g_breakable_depth--;
                 return NULL;
             }
 
@@ -1678,9 +1698,11 @@ static ASTNode *parse_match_statement(void)
             ERROR_AT("expected 'case' or 'default' in match body\n");
             parse_errors++;
             free_ast(match_node);
+            g_breakable_depth--;
             return NULL;
         }
     }
+    g_breakable_depth--;
 
     if (!expect(QTOKEN_RBRACE, "expected '}' to close match body"))
     {
@@ -1709,12 +1731,12 @@ static ASTNode *parse_single_let(void)
     }
 
     // Expect a type keyword
-    VarType type;
+    Type *type;
     if (g_current.type == QTOKEN_TYPE_INT || g_current.type == QTOKEN_TYPE_FLOAT ||
         g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
         g_current.type == QTOKEN_TYPE_BOOL)
     {
-        type = token_to_vartype(g_current.type);
+        type = token_to_type(g_current.type);
         advance();
     }
     else
@@ -1724,34 +1746,80 @@ static ASTNode *parse_single_let(void)
         return NULL;
     }
 
+    // Array type: type[size]
+    bool is_array = false;
+    Type *elem_type = NULL;
+    int array_size = 0;
+    if (g_current.type == QTOKEN_LBRACKET)
+    {
+        advance();
+        if (g_current.type != QTOKEN_INTEGER)
+        {
+            ERROR_AT("expected integer literal for array size\n");
+            parse_errors++;
+            free(name);
+            return NULL;
+        }
+        array_size = g_current.value;
+        advance();
+        if (!expect(QTOKEN_RBRACKET, "expected ']' after array size"))
+        {
+            free(name);
+            return NULL;
+        }
+        is_array = true;
+        elem_type = type;
+        type = NULL; // actual stored type will be built later
+    }
+
     if (!expect(QTOKEN_EQUALS, "expected '=' in let statement"))
     {
         free(name);
         return NULL;
     }
 
-    ASTNode *init = parse_expression();
-    if (!init)
+    ASTNode *init = NULL;
+    if (is_array)
     {
-        free(name);
-        return NULL;
+        init = parse_array_literal();
+        if (!init)
+        {
+            free(name);
+            return NULL;
+        }
+        if (init->data.array_literal.count > array_size)
+        {
+            ERROR_AT("too many initializers for array size %d\n", array_size);
+            parse_errors++;
+            free(name);
+            free_ast(init);
+            return NULL;
+        }
+        Type *arr_type = type_array(elem_type, array_size);
+        symtab_add(name, arr_type);
+        return make_let(name, arr_type, init);
     }
-
-    // Type check
-    VarType init_type = expr_type(init); // or infer_type – both exist; use the parser's own
-    if (!compatible_assignment(type, init_type))
+    else
     {
-        ERROR_AT("type mismatch in 'let %s' - expected %s but got %s\n",
-                 name, ctype_string(type), ctype_string(init_type));
-        parse_errors++;
-        free(name);
-        free_ast(init);
-        return NULL;
+        init = parse_expression();
+        if (!init)
+        {
+            free(name);
+            return NULL;
+        }
+        Type *init_type = expr_type(init);
+        if (!compatible_assignment(type, init_type))
+        {
+            ERROR_AT("type mismatch in 'let %s' - expected %s but got %s\n",
+                     name, type_to_string(type), type_to_string(init_type));
+            parse_errors++;
+            free(name);
+            free_ast(init);
+            return NULL;
+        }
+        symtab_add(name, type);
+        return make_let(name, type, init);
     }
-
-    // Register and return
-    symtab_add(name, type);
-    return make_let(name, type, init);
 }
 
 static ASTNode *parse_let_statement(void)
@@ -1821,12 +1889,12 @@ static ASTNode *parse_let_declaration(void)
         return NULL;
     }
 
-    VarType type;
+    Type *type;
     if (g_current.type == QTOKEN_TYPE_INT || g_current.type == QTOKEN_TYPE_FLOAT ||
         g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
         g_current.type == QTOKEN_TYPE_BOOL)
     {
-        type = token_to_vartype(g_current.type);
+        type = token_to_type(g_current.type);
         advance();
     }
     else
@@ -1836,10 +1904,56 @@ static ASTNode *parse_let_declaration(void)
         return NULL;
     }
 
+    // Array type: type[size]
+    bool is_array = false;
+    Type *elem_type = NULL;
+    int array_size = 0;
+    if (g_current.type == QTOKEN_LBRACKET)
+    {
+        advance();
+        if (g_current.type != QTOKEN_INTEGER)
+        {
+            ERROR_AT("expected integer literal for array size\n");
+            parse_errors++;
+            free(name);
+            return NULL;
+        }
+        array_size = g_current.value;
+        advance();
+        if (!expect(QTOKEN_RBRACKET, "expected ']' after array size"))
+        {
+            free(name);
+            return NULL;
+        }
+        is_array = true;
+        elem_type = type;
+    }
+
     if (!expect(QTOKEN_EQUALS, "expected '=' in let declaration"))
     {
         free(name);
         return NULL;
+    }
+
+    if (is_array)
+    {
+        ASTNode *init = parse_array_literal();
+        if (!init)
+        {
+            free(name);
+            return NULL;
+        }
+        if (init->data.array_literal.count > array_size)
+        {
+            ERROR_AT("too many initializers for array size %d\n", array_size);
+            parse_errors++;
+            free(name);
+            free_ast(init);
+            return NULL;
+        }
+        Type *arr_type = type_array(elem_type, array_size);
+        symtab_add(name, arr_type);
+        return make_let(name, arr_type, init);
     }
 
     ASTNode *init = parse_expression();
@@ -1848,19 +1962,16 @@ static ASTNode *parse_let_declaration(void)
         free(name);
         return NULL;
     }
-
-    // Type check
-    VarType init_type = infer_type(init); // or expr_type(init)
+    Type *init_type = expr_type(init);
     if (!compatible_assignment(type, init_type))
     {
         ERROR_AT("type mismatch in 'let %s' - expected %s but got %s\n",
-                 name, ctype_string(type), ctype_string(init_type));
+                 name, type_to_string(type), type_to_string(init_type));
         parse_errors++;
         free(name);
         free_ast(init);
         return NULL;
     }
-
     symtab_add(name, type);
     return make_let(name, type, init);
 }
@@ -1966,8 +2077,10 @@ static ASTNode *parse_for_statement(void)
     }
 
     g_loop_depth++;
+    g_breakable_depth++;
     ASTNode *body = parse_block();
     g_loop_depth--;
+    g_breakable_depth--;
 
     if (!body)
     {
@@ -2011,7 +2124,7 @@ static ASTNode *parse_func_def(void)
     free(fname); // node has its own copy
 
     // Temporary array for symbol table
-    VarType *param_types = NULL;
+    Type **param_types = NULL;
     int param_count = 0;
 
     // Parameters
@@ -2037,12 +2150,12 @@ static ASTNode *parse_func_def(void)
             }
 
             // parameter type
-            VarType ptype;
+            Type *ptype;
             if (g_current.type == QTOKEN_TYPE_INT || g_current.type == QTOKEN_TYPE_FLOAT ||
                 g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
                 g_current.type == QTOKEN_TYPE_BOOL)
             {
-                ptype = token_to_vartype(g_current.type);
+                ptype = token_to_type(g_current.type);
                 advance();
             }
             else
@@ -2057,7 +2170,7 @@ static ASTNode *parse_func_def(void)
             func_def_add_param(func, pname, ptype);
 
             // record for symbol table
-            param_types = realloc(param_types, (param_count + 1) * sizeof(VarType));
+            param_types = realloc(param_types, (param_count + 1) * sizeof(Type *));
             param_types[param_count++] = ptype;
 
             free(pname);
@@ -2077,7 +2190,7 @@ static ASTNode *parse_func_def(void)
     }
 
     // Return type (optional arrow)
-    VarType ret_type = TYPE_VOID;
+    Type *ret_type = type_primitive(TYPE_VOID);
     if (g_current.type == QTOKEN_ARROW)
     {
         advance(); // consume ->
@@ -2085,7 +2198,7 @@ static ASTNode *parse_func_def(void)
             g_current.type == QTOKEN_TYPE_STRING || g_current.type == QTOKEN_TYPE_CHAR ||
             g_current.type == QTOKEN_TYPE_BOOL || g_current.type == QTOKEN_TYPE_VOID)
         {
-            ret_type = token_to_vartype(g_current.type);
+            ret_type = token_to_type(g_current.type);
             advance();
         }
         else
@@ -2249,6 +2362,84 @@ static ASTNode *parse_statement(void)
             return make_expr_statement(call);
         }
 
+        // Array access at statement level
+        if (g_current.type == QTOKEN_LBRACKET)
+        {
+            Type *vt = symtab_lookup_type(name);
+            ASTNode *base = make_variable(name, vt);
+            free(name);
+            if (!base)
+                return NULL;
+
+            advance(); // consume '['
+            ASTNode *idx = parse_expression();
+            if (!idx)
+            {
+                free_ast(base);
+                return NULL;
+            }
+            Type *idx_type = expr_type(idx);
+            if (!type_is_primitive(idx_type, TYPE_INT))
+            {
+                ERROR_AT("array index must be an integer, got %s\n",
+                         type_to_string(idx_type));
+                parse_errors++;
+                free_ast(idx);
+                free_ast(base);
+                return NULL;
+            }
+            if (!expect(QTOKEN_RBRACKET, "expected ']' after index"))
+            {
+                free_ast(idx);
+                free_ast(base);
+                return NULL;
+            }
+
+            Symbol *sym = symtab_find(base->data.varName);
+            if (!sym || !sym->type || sym->type->kind != TYPE_ARRAY)
+            {
+                ERROR_AT("indexing non-array variable '%s'\n", base->data.varName);
+                parse_errors++;
+                free_ast(idx);
+                free_ast(base);
+                return NULL;
+            }
+
+            ASTNode *access = make_array_access(base, idx, sym->type->as.array.element);
+
+            // If followed by '=', it's an assignment to an array element
+            if (g_current.type == QTOKEN_EQUALS)
+            {
+                advance();
+                ASTNode *rhs = parse_expression();
+                if (!rhs)
+                {
+                    free_ast(access);
+                    return NULL;
+                }
+                ASTNode *assign = make_binary(OP_ASSIGN, access, rhs);
+                if (!assign)
+                {
+                    free_ast(access);
+                    free_ast(rhs);
+                    return NULL;
+                }
+                if (!expect(QTOKEN_SEMICOLON, "expected ';' after assignment"))
+                {
+                    free_ast(assign);
+                    return NULL;
+                }
+                return make_expr_statement(assign);
+            }
+
+            if (!expect(QTOKEN_SEMICOLON, "expected ';' after expression"))
+            {
+                free_ast(access);
+                return NULL;
+            }
+            return make_expr_statement(access);
+        }
+
         // Check for compound assignment tokens first
         BinaryOp compound_op;
         bool is_compound = false;
@@ -2296,7 +2487,7 @@ static ASTNode *parse_statement(void)
                 return NULL;
             }
 
-            VarType vt = symtab_lookup(name);
+            Type *vt = symtab_lookup_type(name);
             ASTNode *var = make_variable(name, vt);
             if (!var)
             {
@@ -2315,8 +2506,8 @@ static ASTNode *parse_statement(void)
             }
 
             // Type check
-            VarType var_type = symtab_lookup(name);
-            VarType expr_type_val = expr_type(binary);
+            Type *var_type = symtab_lookup_type(name);
+            Type *expr_type_val = expr_type(binary);
             if (!compatible_assignment(var_type, expr_type_val))
             {
                 ERROR_AT("type mismatch in compound assignment to '%s'\n", name);
@@ -2349,7 +2540,7 @@ static ASTNode *parse_statement(void)
         {
             UnaryOp op = (g_current.type == QTOKEN_INC) ? UNARY_POST_INC : UNARY_POST_DEC;
             advance();
-            VarType vt = symtab_lookup(name);
+            Type *vt = symtab_lookup_type(name);
             ASTNode *var = make_variable(name, vt);
             if (!var)
             {
@@ -2372,7 +2563,7 @@ static ASTNode *parse_statement(void)
         }
 
         // Any other token: treat the identifier alone as an expression statement
-        VarType vt = symtab_lookup(name);
+        Type *vt = symtab_lookup_type(name);
         ASTNode *var = make_variable(name, vt);
         free(name);
         if (!var)

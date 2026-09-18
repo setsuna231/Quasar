@@ -595,6 +595,18 @@ Token get_next_token(const char *source, int *pos)
             Token t = {.type = QTOKEN_RBRACE, .value = 0, .str = NULL};
             return t;
         }
+    case '[':
+        (*pos)++;
+        {
+            Token t = {.type = QTOKEN_LBRACKET, .value = 0, .str = NULL};
+            return t;
+        }
+    case ']':
+        (*pos)++;
+        {
+            Token t = {.type = QTOKEN_RBRACKET, .value = 0, .str = NULL};
+            return t;
+        }
     case '&':
         (*pos)++;
         if (source[*pos] == '&')

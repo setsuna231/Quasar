@@ -45,6 +45,7 @@ Quasar v1.0.0 is a **stable language core**. All fundamental features are implem
 - **Compound assignment and increment/decrement**:
   - `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `//=`
   - `++`, `--` (prefix and postfix)
+- **Arrays** — fixed-size, typed, with `[]` indexing and `{}` initializer lists
 
 ### Safety & Diagnostics
 
@@ -178,3 +179,7 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ## Acknowledgments
 
 Inspired by a love of systems programming and a dislike of outdated academic C.
+
+## Current Status
+
+Quasar is under active development. See [CHANGELOG.md](CHANGELOG.md) for the latest changes.
